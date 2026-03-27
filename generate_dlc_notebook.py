@@ -28,28 +28,7 @@ This notebook covers the **real deployment pipeline** used in production autonom
 # Section 0: Setup
 nb.cells.append(new_markdown_cell("---\n## 0. Environment Setup"))
 
-nb.cells.append(new_markdown_cell("""### Step 0a — Pin numpy (run this cell, then **restart the runtime**)\n\n> **Why:** Some Colab environments ship with NumPy 2.x which is binary-incompatible with torchvision, onnxruntime, and pycuda.\n> Install numpy<2 first, then click **Runtime → Restart runtime**, then continue from Step 0b."""))
-
-nb.cells.append(new_code_cell("""import subprocess, sys
-result = subprocess.run([sys.executable, "-m", "pip", "install", "numpy<2", "-q"],
-                       capture_output=True, text=True)
-print(result.stdout[-200:] if result.stdout else "")
-print(result.stderr[-200:] if "ERROR" in result.stderr else "")
-
-import importlib
-try:
-    import numpy as np
-    if tuple(int(x) for x in np.__version__.split(".")[:2]) >= (2, 0):
-        print("⚠️  numpy", np.__version__, "detected — please restart the runtime now.")
-        print("   Runtime → Restart runtime, then continue from cell 0b.")
-    else:
-        print(f"✓ numpy {np.__version__} is compatible — no restart needed.")
-except Exception as e:
-    print("Restart the runtime now (Runtime → Restart runtime).")"""))
-
-nb.cells.append(new_markdown_cell("### Step 0b — Install all other dependencies (run after restart)"))
-
-nb.cells.append(new_code_cell("""# All other packages — run this after restarting the runtime
+nb.cells.append(new_code_cell("""# Core ML packages — modern versions all support numpy 2.x
 !pip install torch torchvision onnx onnxsim onnxruntime-gpu Pillow matplotlib -q
 !pip install openvino -q
 !pip install tensorrt pycuda -q
