@@ -63,29 +63,32 @@ nb.cells.append(new_markdown_cell("---\n## 1. Load a Robotics Perception Model, 
 
 nb.cells.append(new_code_cell("""# Load pretrained DeepLabV3 with MobileNetV3 backbone
 # Used in real autonomous driving systems for road/obstacle/sky segmentation
-model = torchvision.models.segmentation.deeplabv3_mobilenet_v3_large(pretrained=True)
-model.eval()
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+print(f'Device: {device}')
 
-# Count parameters
+model = torchvision.models.segmentation.deeplabv3_mobilenet_v3_large(pretrained=True)
+model.eval().to(device)
+
 total_params = sum(p.numel() for p in model.parameters())
 print(f'Model: DeepLabV3-MobileNetV3-Large')
 print(f'Total parameters: {total_params:,}')
 print(f'Model size: ~{total_params * 4 / 1024 / 1024:.1f} MB (FP32)')
 print(f'Backbone: MobileNetV3-Large (lightweight, suitable for mobile/edge)')"""))
 
-nb.cells.append(new_code_cell("""# Download a real driving scene
-IMG_URL = 'https://raw.githubusercontent.com/pytorch/hub/master/images/deeplab1.png'
-IMG_PATH = 'driving_scene.png'
+nb.cells.append(new_code_cell("""# Download a real urban driving scene (bus + pedestrians — perfect for AV segmentation)
+# This is the standard YOLO / ultralytics test image used across AV benchmarks
+IMG_URL  = 'https://ultralytics.com/images/bus.jpg'
+IMG_PATH = 'driving_scene.jpg'
 
 if not os.path.exists(IMG_PATH):
     urllib.request.urlretrieve(IMG_URL, IMG_PATH)
 
 original_image = Image.open(IMG_PATH).convert('RGB')
-print(f'Loaded: {IMG_PATH} ({original_image.size})')
+print(f'Loaded: {IMG_PATH}  size={original_image.size}')
 
 plt.figure(figsize=(12, 6))
 plt.imshow(original_image)
-plt.title('Input: Real Driving Scene (Cityscapes-style)')
+plt.title('Input: Urban Driving Scene (bus, pedestrians, road)')
 plt.axis('off')
 plt.tight_layout()
 plt.show()"""))
@@ -98,8 +101,8 @@ preprocess = T.Compose([
     T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
 
-input_tensor = preprocess(original_image).unsqueeze(0)
-print(f'Input tensor shape: {input_tensor.shape}')
+input_tensor = preprocess(original_image).unsqueeze(0).to(device)
+print(f'Input tensor shape: {input_tensor.shape}  device={input_tensor.device}')
 
 # Cityscapes color palette
 CITYSCAPES_COLORS = np.array([
@@ -146,9 +149,10 @@ nb.cells.append(new_code_cell("""# Run PyTorch inference (baseline)
 with torch.no_grad():
     pytorch_output = model(input_tensor)['out']
 
-pytorch_seg, pytorch_classes = visualize_segmentation(pytorch_output)
+# Move to CPU for visualization / numpy ops
+pytorch_output_cpu = pytorch_output.cpu()
+pytorch_seg, pytorch_classes = visualize_segmentation(pytorch_output_cpu)
 
-# Visualize
 fig, axes = plt.subplots(1, 2, figsize=(16, 6))
 axes[0].imshow(T.CenterCrop(480)(T.Resize(520)(original_image)))
 axes[0].set_title('Input Image', fontsize=14)
@@ -161,28 +165,35 @@ plt.show()
 
 unique_classes = np.unique(pytorch_classes)
 print(f'Classes detected: {len(unique_classes)}')
-print(f'Output shape: {pytorch_output.shape}')\n"""))
+print(f'Output shape: {pytorch_output.shape}')
+print(f'Device: {pytorch_output.device}')\n"""))
 
-nb.cells.append(new_code_cell("""# Benchmark function
+nb.cells.append(new_code_cell("""# Benchmark function — GPU-aware (syncs CUDA before stopping the clock)
+_use_cuda = torch.cuda.is_available()
+
 def benchmark(run_fn, name, n_warmup=10, n_runs=50):
-    \"\"\"Generic benchmark with warmup.\"\"\"
     for _ in range(n_warmup):
         run_fn()
+    if _use_cuda:
+        torch.cuda.synchronize()
 
     times = []
     for _ in range(n_runs):
         start = time.perf_counter()
         run_fn()
+        if _use_cuda:
+            torch.cuda.synchronize()   # wait for GPU kernel to finish
         times.append((time.perf_counter() - start) * 1000)
 
     avg, std = np.mean(times), np.std(times)
     fps = 1000 / avg
-    print(f'{name:.<40} {avg:.1f} ms ± {std:.1f} ms ({fps:.1f} FPS)')
+    print(f'{name:.<45} {avg:.1f} ms ± {std:.1f} ms  ({fps:.1f} FPS)')
     return avg
 
+hw = f'GPU ({torch.cuda.get_device_name(0)})' if _use_cuda else 'CPU'
 pytorch_time = benchmark(
     lambda: model(input_tensor),
-    'PyTorch (CPU)'
+    f'PyTorch ({hw})'
 )"""))
 
 # Section 2: ONNX Export
@@ -277,10 +288,10 @@ print(f'Input:  {input_meta.name} {input_meta.shape}')
 print(f'Output: {output_meta.name} {output_meta.shape}')\n"""))
 
 nb.cells.append(new_code_cell("""# Run ONNX Runtime inference
-onnx_input = input_tensor.numpy()
+# ORT always takes numpy on CPU — move off GPU first
+onnx_input = input_tensor.cpu().numpy()
 onnx_output = session.run([output_meta.name], {input_meta.name: onnx_input})[0]
 
-# Visualize
 onnx_seg, _ = visualize_segmentation(onnx_output)
 
 fig, axes = plt.subplots(1, 2, figsize=(16, 6))
@@ -288,17 +299,17 @@ axes[0].imshow(pytorch_seg)
 axes[0].set_title('PyTorch Output', fontsize=14)
 axes[0].axis('off')
 axes[1].imshow(onnx_seg)
-axes[1].set_title('ONNX Runtime Output', fontsize=14)
+axes[1].set_title(f'ONNX Runtime Output ({session.get_providers()[0]})', fontsize=14)
 axes[1].axis('off')
 plt.suptitle('Output Comparison: PyTorch vs ONNX Runtime', fontsize=14)
 plt.tight_layout()
 plt.show()
 
-# Verify numerical consistency
-pytorch_np = pytorch_output.numpy()
+pytorch_np = pytorch_output_cpu.numpy()
 max_diff = np.max(np.abs(pytorch_np - onnx_output))
 print(f'Max numerical difference: {max_diff:.6f}')
-print(f'Outputs match: ✓' if max_diff < 0.001 else 'Outputs differ ⚠')\n"""))
+print(f'Outputs match: ✓' if max_diff < 0.001 else 'Outputs differ ⚠')
+print(f'ORT provider: {session.get_providers()[0]}')\n"""))
 
 nb.cells.append(new_code_cell("""# Benchmark ONNX Runtime
 onnx_time = benchmark(
@@ -445,7 +456,7 @@ print(f'Sparsity achieved:        {100*(1 - pruned_nonzero/total):.1f}%')
 
 nb.cells.append(new_code_cell("""# Run inference with pruned model
 with torch.no_grad():
-    pruned_output = pruned_model(input_tensor)
+    pruned_output = pruned_model(input_tensor).cpu()
 
 pruned_seg, _ = visualize_segmentation(pruned_output)
 
@@ -462,7 +473,7 @@ plt.tight_layout()
 plt.show()
 
 # Measure accuracy difference
-match = (pytorch_output.argmax(dim=1) == pruned_output.argmax(dim=1)).float().mean().item()
+match = (pytorch_output_cpu.argmax(dim=1) == pruned_output.argmax(dim=1)).float().mean().item()
 print(f'Pixel agreement with original: {match*100:.1f}%')\n"""))
 
 nb.cells.append(new_code_cell("""# Export pruned model to ONNX
