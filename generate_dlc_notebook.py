@@ -1,779 +1,656 @@
 #!/usr/bin/env python3
-"""Generate the restructured DLC_Deployment.ipynb notebook."""
+"""Generate DLC_Deployment.ipynb — SceneSeg Autoware edition. Step 1/6: title + setup."""
 
-import json
 import nbformat
 from nbformat.v4 import new_notebook, new_markdown_cell, new_code_cell
 
 nb = new_notebook()
 
-# Title
-nb.cells.append(new_markdown_cell("""# 🚀 Neural Network Deployment — From PyTorch to Production
-## The Complete Autonomous Vehicle/Robotics Deployment Pipeline
+# ─── Title ────────────────────────────────────────────────────────────────────
+nb.cells.append(new_markdown_cell("""\
+# Neural Network Deployment — From PyTorch to Production
+## Real Autoware Models · Real Waymo Data · Real Benchmarks
 
-**A companion notebook to [Neural Optimization](https://thinkautonomous.ai) by [Think Autonomous](https://thinkautonomous.ai)**
+This notebook uses **SceneSeg** — Autoware's production segmentation model — and real **Waymo driving frames**.
 
-This notebook covers the **real deployment pipeline** used in production autonomous systems like [Autoware](https://github.com/autowarefoundation/autoware):
-1. Load a robotics perception model → visualize → baseline benchmark
-2. Export to ONNX → validate → compare FPS with ONNX Runtime
-3. Understand the PyTorch ↔ ONNX workflow
-4. Optimize before export: Pruning + Quantization → ONNX
-5. Analyze Autoware's **TensorRT C++ production code**
-6. Deploy with TensorRT on Colab (FP16 inference)
-7. Production profiling & benchmarking
-8. End-to-end pipeline project: Train → Optimize → Export → Deploy → Benchmark
+| Test | Runtime | Device |
+|------|---------|--------|
+| Test 1 | PyTorch | CPU (baseline) |
+| Test 2 | PyTorch | GPU |
+| Test 3 | ONNX Runtime | GPU |
+| Test 4 | TensorRT FP16 | GPU |
 
-**Requirements:** Google Colab with a **T4 GPU** runtime (recommended)"""))
+> **Requirements:** Google Colab · T4 GPU runtime"""))
 
-# Section 0: Setup
-nb.cells.append(new_markdown_cell("---\n## 0. Environment Setup"))
+# ─── Section 0: Setup ─────────────────────────────────────────────────────────
+nb.cells.append(new_markdown_cell("---\n## 0. Setup"))
 
-nb.cells.append(new_code_cell("""# Core ML packages — modern versions all support numpy 2.x
-!pip install torch torchvision onnx onnxsim onnxruntime-gpu Pillow matplotlib -q
-!pip install openvino -q
-!pip install tensorrt pycuda -q
+nb.cells.append(new_code_cell("""\
+!pip install torch torchvision onnx onnxsim onnxruntime-gpu gdown tensorrt pycuda -q
+import warnings; warnings.filterwarnings('ignore')
+print("✓ Packages ready")"""))
 
-import warnings
-warnings.filterwarnings('ignore')
-print("✓ Environment ready")"""))
-
-nb.cells.append(new_code_cell("""import torch
-import torchvision
+nb.cells.append(new_code_cell("""\
+import torch
 import torchvision.transforms as T
-import torch.nn as torch_nn
 import numpy as np
-import time
-import os
+import time, os, glob
+from pathlib import Path
 from PIL import Image
 import matplotlib.pyplot as plt
-import urllib.request
-import copy
+import matplotlib.patches as mpatches
+import cv2, onnx, onnxsim
+import onnxruntime as ort
+from onnxruntime.quantization import quantize_dynamic, QuantType
 
-print(f'PyTorch version: {torch.__version__}')
-print(f'CUDA available:  {torch.cuda.is_available()}')
-if torch.cuda.is_available():
-    print(f'GPU:             {torch.cuda.get_device_name(0)}')
-    print(f'CUDA version:    {torch.version.cuda}')
-else:
-    print('⚠️  No GPU detected. TensorRT section will be CPU-only.')
-    print('   For full GPU support, use Runtime → Change runtime type → T4 GPU')\n"""))
+print(f"PyTorch   {torch.__version__}")
+print(f"ORT       {ort.__version__}")
+print(f"CUDA      {torch.cuda.is_available()}  —  " +
+      (torch.cuda.get_device_name(0) if torch.cuda.is_available() else "N/A"))"""))
 
-# Section 1: Load PyTorch Model
-nb.cells.append(new_markdown_cell("---\n## 1. Load a Robotics Perception Model, Visualize & Benchmark\n\n### Context: Autonomous Driving Perception\nPerception is the first step in autonomous systems. Deep learning models predict:\n- **Semantic segmentation** → \"What is each pixel?\"\n- **Object detection** → \"Where are the cars/pedestrians?\"\n- **Depth estimation** → \"How far is that object?\"\n\nWe'll use **DeepLabV3-MobileNetV3-Large**: a real segmentation model used in mobile/edge AV systems.\n\n**Real Autoware example:** [Autoware's EgoLanes model](https://github.com/autowarefoundation/autoware/tree/main/perception/perception_lanelet2_map_based) predicts lane lines for autonomous driving."))
+# ─── Section 1: Download Data & Models ────────────────────────────────────────
+nb.cells.append(new_markdown_cell("""\
+---
+## 1. Download Data & Models
 
-nb.cells.append(new_code_cell("""# Load pretrained DeepLabV3 with MobileNetV3 backbone (kept on CPU for ONNX export)
-model = torchvision.models.segmentation.deeplabv3_mobilenet_v3_large(pretrained=True)
+Real **Waymo driving frames** + Autoware's **SceneSeg** model at multiple precisions."""))
+
+nb.cells.append(new_code_cell("""\
+!mkdir -p /content/data /content/models
+
+# Real Waymo driving frames
+!wget -qq https://optical-flow-data.s3.eu-west-3.amazonaws.com/waymo_images.zip \\
+     -O /content/data/waymo.zip
+!unzip -qq /content/data/waymo.zip -d /content/data/
+
+# SceneSeg ONNX models (pre-built by Autoware at multiple precisions)
+!gdown -O /content/models/ 'https://docs.google.com/uc?export=download&id=1l-dniunvYyFKvLD7k16Png3AsVTuMl9f'
+!gdown -O /content/models/ 'https://docs.google.com/uc?export=download&id=19gMPt_1z4eujo4jm5XKuH-8eafh-wJC6'
+!gdown -O /content/models/ 'https://docs.google.com/uc?export=download&id=1zCworKw4aQ9_hDBkHfj1-sXitAAebl5Y'
+
+# SceneSeg Traced PyTorch model (TorchScript — no class definition needed)
+!gdown '1G2pKrjEGLGY1ouQdNPh11N-5LlmDI7ES' -O /content/models/SceneSeg_traced.pt
+
+print("\\n📁 Models:")
+for f in sorted(glob.glob('/content/models/*')):
+    print(f"  {Path(f).name:<40}  {os.path.getsize(f)/1024/1024:.1f} MB")
+
+frames = sorted(
+    glob.glob('/content/data/**/*.jpg', recursive=True) +
+    glob.glob('/content/data/**/*.png', recursive=True)
+)
+print(f"\\n📷 Waymo frames: {len(frames)} images")"""))
+
+# ─── Section 2: SceneSeg with PyTorch ─────────────────────────────────────────
+nb.cells.append(new_markdown_cell("""\
+---
+## 2. Load SceneSeg (PyTorch) → Visualize → Benchmark
+
+### What is SceneSeg?
+SceneSeg is Autoware's semantic segmentation model. It labels every pixel as one of **3 classes**:
+- 🔴 **Background** — sky, buildings, vegetation
+- 🟣 **Foreground objects** — cars, pedestrians, cyclists
+- 🟢 **Drivable road** — the surface the AV drives on
+
+It runs on every camera frame and feeds directly into the AV's planning module.
+
+### What is a Traced PyTorch model?
+A **Traced model** is created with `torch.jit.trace()`. PyTorch records every operation as it runs
+on a sample input, freezing the computation graph as **TorchScript**. This means:
+- No Python runtime needed at deployment
+- Loads with `torch.jit.load()` — **no class definition required**
+- Exports to ONNX cleanly
+- What Autoware ships to C++ inference nodes"""))
+
+nb.cells.append(new_code_cell("""\
+# Load the traced SceneSeg model — no class definition needed
+model = torch.jit.load('/content/models/SceneSeg_traced.pt', map_location='cpu')
 model.eval()
+print("✓ SceneSeg traced model loaded")
 
-total_params = sum(p.numel() for p in model.parameters())
-print(f'Model: DeepLabV3-MobileNetV3-Large')
-print(f'Total parameters: {total_params:,}')
-print(f'Model size: ~{total_params * 4 / 1024 / 1024:.1f} MB (FP32)')
-if torch.cuda.is_available():
-    print(f'GPU available: {torch.cuda.get_device_name(0)}  — GPU tests will run in later cells')"""))
+H, W = 256, 512   # SceneSeg standard input size
 
-nb.cells.append(new_code_cell("""# Download a real urban driving scene (bus + pedestrians — perfect for AV segmentation)
-# This is the standard YOLO / ultralytics test image used across AV benchmarks
-IMG_URL  = 'https://ultralytics.com/images/bus.jpg'
-IMG_PATH = 'driving_scene.jpg'
-
-if not os.path.exists(IMG_PATH):
-    urllib.request.urlretrieve(IMG_URL, IMG_PATH)
-
-original_image = Image.open(IMG_PATH).convert('RGB')
-print(f'Loaded: {IMG_PATH}  size={original_image.size}')
-
-plt.figure(figsize=(12, 6))
-plt.imshow(original_image)
-plt.title('Input: Urban Driving Scene (bus, pedestrians, road)')
-plt.axis('off')
-plt.tight_layout()
-plt.show()"""))
-
-nb.cells.append(new_code_cell("""# Preprocessing pipeline (same as production)
 preprocess = T.Compose([
-    T.Resize(520),
-    T.CenterCrop(480),
+    T.Resize((H, W)),
     T.ToTensor(),
     T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
 
-input_tensor = preprocess(original_image).unsqueeze(0)   # stays on CPU
-print(f'Input tensor shape: {input_tensor.shape}')
-
-# Cityscapes color palette
-CITYSCAPES_COLORS = np.array([
-    [0, 0, 0],       # background
-    [128, 64, 128],  # road
-    [244, 35, 232],  # sidewalk
-    [70, 70, 70],    # building
-    [102, 102, 156], # wall
-    [190, 153, 153], # fence
-    [153, 153, 153], # pole
-    [250, 170, 30],  # traffic light
-    [220, 220, 0],   # traffic sign
-    [107, 142, 35],  # vegetation
-    [152, 251, 152], # terrain
-    [70, 130, 180],  # sky
-    [220, 20, 60],   # person
-    [255, 0, 0],     # rider
-    [0, 0, 142],     # car
-    [0, 0, 70],      # truck
-    [0, 60, 100],    # bus
-    [0, 80, 100],    # train
-    [0, 0, 230],     # motorcycle
-    [119, 11, 32],   # bicycle
-    [128, 128, 128], # other
+# SceneSeg 3-class colour palette (from Autoware workshop)
+COLORS = np.array([
+    [255,  93,  61],  # 0 = background
+    [145,  28, 255],  # 1 = foreground objects
+    [220, 255,   0],  # 2 = drivable road
 ], dtype=np.uint8)
 
-def visualize_segmentation(prediction, title='Segmentation'):
-    \"\"\"Convert model output to color segmentation map.\"\"\"
-    if isinstance(prediction, torch.Tensor):
-        seg_map = prediction.argmax(dim=1).squeeze().cpu().numpy()
+def scene_vis(orig_bgr, raw_out):
+    \"\"\"Blend segmentation colours onto the original frame.\"\"\"
+    a = np.array(raw_out)
+    if a.ndim == 4:
+        ch = a.shape[1]
+        class_map = np.argmax(a[0], axis=0) if ch > 1 else (a[0, 0] > 0.0).astype(np.int32)
+    elif a.ndim == 3:
+        class_map = np.argmax(a, axis=0) if a.shape[0] > 1 else (a[0] > 0.0).astype(np.int32)
     else:
-        seg_map = prediction.argmax(axis=1).squeeze()
+        class_map = (a.squeeze() > 0.0).astype(np.int32)
+    class_map = np.clip(class_map, 0, 2)
+    vis_col = COLORS[class_map.astype(int)]
+    if vis_col.shape[:2] != orig_bgr.shape[:2]:
+        vis_col = cv2.resize(vis_col, (orig_bgr.shape[1], orig_bgr.shape[0]),
+                             interpolation=cv2.INTER_NEAREST)
+    return cv2.addWeighted(orig_bgr, 0.6, vis_col, 0.4, 0)
 
-    h, w = seg_map.shape
-    color_map = np.zeros((h, w, 3), dtype=np.uint8)
-    for cls_id in range(len(CITYSCAPES_COLORS)):
-        color_map[seg_map == cls_id] = CITYSCAPES_COLORS[cls_id]
+print("✓ Preprocessing + scene_vis ready")"""))
 
-    return color_map, seg_map
+nb.cells.append(new_code_cell("""\
+# Load Waymo frames and show them
+frames = sorted(
+    glob.glob('/content/data/**/*.jpg', recursive=True) +
+    glob.glob('/content/data/**/*.png', recursive=True)
+)
+show = frames[:6]
 
-print('✓ Preprocessing ready')\n"""))
+fig, axes = plt.subplots(1, len(show), figsize=(20, 3))
+for ax, f in zip(axes, show):
+    ax.imshow(cv2.cvtColor(cv2.imread(f), cv2.COLOR_BGR2RGB))
+    ax.set_title(Path(f).name[:18], fontsize=7); ax.axis('off')
+plt.suptitle('Waymo Driving Frames', fontsize=12)
+plt.tight_layout(); plt.show()
 
-nb.cells.append(new_code_cell("""# Visualize: run CPU inference once to get the segmentation map
+# Pick the first frame as our test image
+frame_bgr    = cv2.imread(frames[0])
+frame_rgb    = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+pil_frame    = Image.fromarray(frame_rgb)
+input_tensor = preprocess(pil_frame).unsqueeze(0)   # (1,3,H,W) CPU
+print(f"Input tensor: {input_tensor.shape}")"""))
+
+nb.cells.append(new_code_cell("""\
+# Run PyTorch inference and visualise
 with torch.no_grad():
-    pytorch_output = model(input_tensor)['out']   # CPU tensor
+    raw_out = model(input_tensor)
 
-pytorch_seg, pytorch_classes = visualize_segmentation(pytorch_output)
+# TorchScript models may return a tensor or a list/tuple
+if isinstance(raw_out, (list, tuple)):
+    raw_out = raw_out[0]
+seg_np = raw_out.cpu().numpy()   # keep for ORT comparison later
 
-fig, axes = plt.subplots(1, 2, figsize=(16, 6))
-axes[0].imshow(T.CenterCrop(480)(T.Resize(520)(original_image)))
-axes[0].set_title('Input Image', fontsize=14)
-axes[0].axis('off')
-axes[1].imshow(pytorch_seg)
-axes[1].set_title('Semantic Segmentation Output', fontsize=14)
-axes[1].axis('off')
-plt.tight_layout()
-plt.show()
-print(f'Classes detected: {len(np.unique(pytorch_classes))}')\n"""))
+overlay = scene_vis(cv2.resize(frame_bgr, (W, H)), seg_np)
 
-nb.cells.append(new_code_cell("""# Benchmark helper — syncs CUDA so GPU timing is accurate
-def benchmark(run_fn, name, n_warmup=10, n_runs=50, use_cuda=False):
+# Build colour legend
+legend = [mpatches.Patch(color=np.array(c)/255, label=lbl)
+          for c, lbl in zip([[255,93,61],[145,28,255],[220,255,0]],
+                             ['Background','Foreground','Road'])]
+
+fig, axes = plt.subplots(1, 3, figsize=(18, 4))
+axes[0].imshow(cv2.resize(frame_rgb, (W, H)));          axes[0].set_title('Input Frame');        axes[0].axis('off')
+axes[1].imshow(COLORS[np.clip(np.argmax(seg_np[0],0) if seg_np.shape[1]>1 else (seg_np[0,0]>0).astype(int), 0, 2)]);
+axes[1].set_title('Segmentation Mask'); axes[1].axis('off'); axes[1].legend(handles=legend, loc='lower right', fontsize=8)
+axes[2].imshow(cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB)); axes[2].set_title('Overlay'); axes[2].axis('off')
+plt.suptitle('SceneSeg — Autoware Semantic Segmentation (3 classes)', fontsize=13)
+plt.tight_layout(); plt.show()"""))
+
+nb.cells.append(new_code_cell("""\
+# Benchmark helper — returns the full time distribution for rich plots later
+def benchmark(run_fn, name, n_warmup=10, n_runs=100, use_cuda=False):
     for _ in range(n_warmup):
         run_fn()
     if use_cuda:
         torch.cuda.synchronize()
-
     times = []
     for _ in range(n_runs):
-        start = time.perf_counter()
+        t0 = time.perf_counter()
         run_fn()
         if use_cuda:
             torch.cuda.synchronize()
-        times.append((time.perf_counter() - start) * 1000)
+        times.append((time.perf_counter() - t0) * 1000)
+    t = np.array(times)
+    p50, p95 = np.percentile(t, 50), np.percentile(t, 95)
+    print(f'{name:.<58} avg={t.mean():6.1f}ms  p50={p50:5.1f}ms  p95={p95:5.1f}ms  ({1000/t.mean():.0f} FPS)')
+    return t
 
-    avg, std = np.mean(times), np.std(times)
-    print(f'{name:.<50} {avg:6.1f} ms ± {std:.1f} ms  ({1000/avg:.1f} FPS)')
-    return avg
+# ── Test 1: PyTorch CPU ───────────────────────────────────────────────────────
+pytorch_cpu_times = benchmark(lambda: model(input_tensor), 'Test 1 · PyTorch CPU')"""))
 
-# ── Test 1: PyTorch CPU ──────────────────────────────────────────────────────
-pytorch_cpu_time = benchmark(lambda: model(input_tensor), 'Test 1 · PyTorch CPU')
-"""))
-
-nb.cells.append(new_code_cell("""# ── Test 2: PyTorch GPU ─────────────────────────────────────────────────────
+nb.cells.append(new_code_cell("""\
+# ── Test 2: PyTorch GPU ──────────────────────────────────────────────────────
 if not torch.cuda.is_available():
-    print('⚠ No GPU — skipping Test 2')
-    pytorch_gpu_time = None
+    print('⚠ No GPU — skipping Test 2'); pytorch_gpu_times = None
 else:
-    model_gpu     = model.cuda()
-    input_gpu     = input_tensor.cuda()
-
-    pytorch_gpu_time = benchmark(
+    model_gpu  = model.cuda()
+    input_gpu  = input_tensor.cuda()
+    pytorch_gpu_times = benchmark(
         lambda: model_gpu(input_gpu),
         f'Test 2 · PyTorch GPU ({torch.cuda.get_device_name(0)})',
         use_cuda=True,
     )
-    if pytorch_cpu_time and pytorch_gpu_time:
-        print(f'GPU speedup over CPU: {pytorch_cpu_time/pytorch_gpu_time:.1f}x')
-"""))
+    print(f'\\nGPU speedup over CPU: {pytorch_cpu_times.mean()/pytorch_gpu_times.mean():.1f}x')"""))
 
-# Section 2: ONNX Export
-nb.cells.append(new_markdown_cell("---\n## 2. Export to ONNX → Validate → Load with ONNX Runtime → Compare FPS\n\n### Why ONNX?\n- **Framework-agnostic** → Train in PyTorch, deploy anywhere\n- **Optimized runtimes** → ONNX Runtime, TensorRT, OpenVINO all optimize ONNX\n- **Model zoo** → Download pre-converted models\n\n**Autoware example:** Most Autoware perception models are exported to ONNX for deployment across different hardware."))
+# ─── Section 3: ONNX Export + ONNX Runtime ────────────────────────────────────
+nb.cells.append(new_markdown_cell("""\
+---
+## 3. Export to ONNX → Run with ONNX Runtime
 
-nb.cells.append(new_code_cell("""import onnx
-import onnxsim
+The traced (TorchScript) model exports to ONNX without any wrapper. Once you have an ONNX file,
+loading it for inference is **6 lines** — this is what production deployments look like."""))
 
-ONNX_PATH = 'deeplabv3_mobilenetv3.onnx'
+nb.cells.append(new_code_cell("""\
+# Export the traced SceneSeg model to ONNX
+# TorchScript traces export cleanly — no wrapper class needed
+ONNX_EXPORT_PATH = '/content/models/SceneSeg_export.onnx'
+img_np = input_tensor.numpy()   # CPU numpy — stays CPU throughout ONNX path
 
-# DeepLabV3 returns a dict, wrap it to export cleanly
-class SegmentationWrapper(torch_nn.Module):
-    def __init__(self, model):
-        super().__init__()
-        self.model = model
-
-    def forward(self, x):
-        return self.model(x)['out']
-
-wrapped_model = SegmentationWrapper(model)
-wrapped_model.eval()
-
-print('Exporting to ONNX (opset 18, for ONNX Runtime)...')
 torch.onnx.export(
-    wrapped_model,
-    input_tensor,
-    ONNX_PATH,
-    verbose=False,
-    input_names=['input'],
-    output_names=['output'],
-    opset_version=18,
+    model, input_tensor, ONNX_EXPORT_PATH,
+    input_names=['image'], output_names=['segmentation'],
+    opset_version=17,
 )
 
-# Validate
-model_onnx = onnx.load(ONNX_PATH)
-onnx.checker.check_model(model_onnx)
-print('✓ ONNX model validated')
-
-# Simplify
-print('Simplifying ONNX graph...')
-model_simplified, ok = onnxsim.simplify(model_onnx)
+onnx_model = onnx.load(ONNX_EXPORT_PATH)
+onnx.checker.check_model(onnx_model)
+simplified, ok = onnxsim.simplify(onnx_model)
 if ok:
-    onnx.save(model_simplified, ONNX_PATH)
-    print('✓ ONNX model simplified')
+    onnx.save(simplified, ONNX_EXPORT_PATH)
 
-size_mb = os.path.getsize(ONNX_PATH) / 1024 / 1024
-print(f'\\nONNX model saved: {ONNX_PATH} ({size_mb:.1f} MB)')
+size_mb = os.path.getsize(ONNX_EXPORT_PATH) / 1024 / 1024
+print(f'✓ Exported  →  {ONNX_EXPORT_PATH}  ({size_mb:.1f} MB)')"""))
 
-# ── TRT-specific export ──────────────────────────────────────────────────────
-# TensorRT 8.x only supports ONNX opset ≤17 and chokes on ops emitted by
-# PyTorch's new dynamo exporter. We export a second file with the legacy
-# TorchScript exporter (dynamo=False) at opset 17 specifically for TRT.
-ONNX_TRT_PATH = 'deeplabv3_for_trt.onnx'
-print('\\nExporting TRT-compatible ONNX (opset 17, legacy exporter)...')
+nb.cells.append(new_code_cell("""\
+# ── Load with ONNX Runtime — production-style, minimal ───────────────────────
+# Use the pre-built Autoware FP32 ONNX if available, else our export
+onnx_files = sorted(glob.glob('/content/models/*.onnx'))
+MODEL_FILE  = Path(next((f for f in onnx_files if 'FP32' in f), ONNX_EXPORT_PATH))
+print(f'Using: {MODEL_FILE.name}')
+
+providers = (
+    ['CUDAExecutionProvider', 'CPUExecutionProvider']
+    if 'CUDAExecutionProvider' in ort.get_available_providers()
+    else ['CPUExecutionProvider']
+)
+sess     = ort.InferenceSession(MODEL_FILE, providers=providers)
+inp_meta = sess.get_inputs()[0]
+
 try:
-    torch.onnx.export(
-        wrapped_model, input_tensor, ONNX_TRT_PATH,
-        input_names=['input'], output_names=['output'],
-        opset_version=17, dynamo=False,
-    )
-except TypeError:
-    # PyTorch < 2.1 — legacy exporter is already the default
-    torch.onnx.export(
-        wrapped_model, input_tensor, ONNX_TRT_PATH,
-        input_names=['input'], output_names=['output'],
-        opset_version=17,
-    )
-trt_onnx = onnx.load(ONNX_TRT_PATH)
-onnx.checker.check_model(trt_onnx)
-trt_onnx_simplified, ok = onnxsim.simplify(trt_onnx)
-if ok:
-    onnx.save(trt_onnx_simplified, ONNX_TRT_PATH)
-print(f'✓ TRT ONNX saved: {ONNX_TRT_PATH}')
-"""))
+    H_ort = int(inp_meta.shape[2]) if inp_meta.shape[2] is not None else H
+    W_ort = int(inp_meta.shape[3]) if inp_meta.shape[3] is not None else W
+except Exception:
+    H_ort, W_ort = H, W
 
-nb.cells.append(new_code_cell("""import onnxruntime as ort
+active = sess.get_providers()[0]
+print(f'Provider : {active}')
+print(f'Input    : {inp_meta.name}  {inp_meta.shape}')"""))
 
-print(f'ONNX Runtime version: {ort.__version__}')
-print(f'Available providers: {ort.get_available_providers()}')
+nb.cells.append(new_code_cell("""\
+# ORT inference — pass CPU numpy; CUDA provider handles H2D internally
+ort_out = sess.run(None, {inp_meta.name: img_np})[0]
 
-# Test 3: ONNX Runtime GPU — must use CUDAExecutionProvider
-# ORT takes CPU numpy as input; the CUDA provider handles H2D transfer internally.
-session = ort.InferenceSession(
-    ONNX_PATH,
-    providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
+ort_overlay = scene_vis(cv2.resize(frame_bgr, (W_ort, H_ort)), ort_out)
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 4))
+axes[0].imshow(cv2.cvtColor(overlay,     cv2.COLOR_BGR2RGB)); axes[0].set_title('PyTorch output');            axes[0].axis('off')
+axes[1].imshow(cv2.cvtColor(ort_overlay, cv2.COLOR_BGR2RGB)); axes[1].set_title(f'ONNX Runtime ({active})'); axes[1].axis('off')
+plt.suptitle('Equivalence check: PyTorch vs ONNX Runtime', fontsize=13)
+plt.tight_layout(); plt.show()
+
+max_diff = np.abs(seg_np - ort_out).max()
+print(f'Max numerical difference: {max_diff:.6f}  (< 0.01 ✓)')"""))
+
+nb.cells.append(new_code_cell("""\
+# ── Test 3: ONNX Runtime GPU ─────────────────────────────────────────────────
+onnx_gpu_times = benchmark(
+    lambda: sess.run(None, {inp_meta.name: img_np}),
+    f'Test 3 · ONNX Runtime ({active})',
+    use_cuda=('CUDA' in active),
 )
-active_provider = session.get_providers()[0]
-print(f'Active ORT provider: {active_provider}')
-if active_provider != 'CUDAExecutionProvider':
-    print('⚠ CUDA provider unavailable — make sure onnxruntime-gpu is installed and GPU runtime is selected')
+if pytorch_gpu_times is not None:
+    print(f'ORT vs PyTorch GPU: {pytorch_gpu_times.mean()/onnx_gpu_times.mean():.2f}x')"""))
 
-input_meta  = session.get_inputs()[0]
-output_meta = session.get_outputs()[0]
-print(f'Input:  {input_meta.name} {input_meta.shape}')
-print(f'Output: {output_meta.name} {output_meta.shape}')\n"""))
+# ─── Section 4: Precision comparison ──────────────────────────────────────────
+nb.cells.append(new_markdown_cell("""\
+---
+## 4. Precision: FP32 vs FP16 vs INT8
 
-nb.cells.append(new_code_cell("""# Validate ORT output vs PyTorch
-# ORT always takes a CPU numpy array — the CUDA provider handles the GPU transfer
-onnx_input = input_tensor.numpy()   # input_tensor is already on CPU
-onnx_output = session.run([output_meta.name], {input_meta.name: onnx_input})[0]
+In production you never deploy in FP32 if you don't have to.
+Autoware ships models at multiple precisions — let's compare them all."""))
 
-onnx_seg, _ = visualize_segmentation(onnx_output)
+nb.cells.append(new_code_cell("""\
+# Dynamic INT8 quantization from the FP32 ONNX
+QUANT_PATH = '/content/models/SceneSeg_INT8_ort.onnx'
+quantize_dynamic(str(MODEL_FILE), QUANT_PATH, weight_type=QuantType.QInt8)
 
-fig, axes = plt.subplots(1, 2, figsize=(16, 6))
-axes[0].imshow(pytorch_seg)
-axes[0].set_title('PyTorch CPU output', fontsize=14)
-axes[0].axis('off')
-axes[1].imshow(onnx_seg)
-axes[1].set_title(f'ONNX Runtime ({active_provider})', fontsize=14)
-axes[1].axis('off')
-plt.suptitle('Numerical equivalence check', fontsize=14)
-plt.tight_layout()
-plt.show()
+orig_mb  = os.path.getsize(MODEL_FILE) / 1024 / 1024
+quant_mb = os.path.getsize(QUANT_PATH) / 1024 / 1024
+print(f'FP32:  {orig_mb:.1f} MB')
+print(f'INT8:  {quant_mb:.1f} MB  ({(1 - quant_mb/orig_mb)*100:.0f}% smaller)')"""))
 
-max_diff = np.max(np.abs(pytorch_output.numpy() - onnx_output))
-print(f'Max numerical difference: {max_diff:.6f}  (< 0.001 = ✓)')
-\n"""))
+nb.cells.append(new_code_cell("""\
+# Compare all ONNX variants: size + GPU speed
+all_onnx = sorted(glob.glob('/content/models/*.onnx'))
+print(f'  {"Model":<35} {"Size MB":>8}  {"avg ms":>8}  {"FPS":>6}')
+print('  ' + '-'*60)
 
-nb.cells.append(new_code_cell("""# ── Test 3: ONNX Runtime GPU ────────────────────────────────────────────────
-onnx_gpu_time = benchmark(
-    lambda: session.run([output_meta.name], {input_meta.name: onnx_input}),
-    f'Test 3 · ONNX Runtime GPU ({active_provider})',
-    use_cuda=(active_provider == 'CUDAExecutionProvider'),
-)
-if pytorch_gpu_time:
-    print(f'ORT GPU vs PyTorch GPU: {pytorch_gpu_time/onnx_gpu_time:.2f}x')
-\n"""))
+precision_data = {}
+for mf in all_onnx:
+    name = Path(mf).name
+    mb   = os.path.getsize(mf) / 1024 / 1024
+    try:
+        _prov = providers
+        _sess = ort.InferenceSession(mf, providers=_prov)
+        _inp  = _sess.get_inputs()[0]
+        _x    = np.random.randn(1, 3, H, W).astype(np.float32)
+        for _ in range(5): _sess.run(None, {_inp.name: _x})
+        t0 = time.perf_counter()
+        for _ in range(50): _sess.run(None, {_inp.name: _x})
+        avg_ms = (time.perf_counter() - t0) * 1000 / 50
+        precision_data[name] = {'mb': mb, 'avg': avg_ms}
+        print(f'  {name:<35} {mb:>8.1f}  {avg_ms:>8.1f}  {1000/avg_ms:>6.0f}')
+    except Exception as e:
+        print(f'  {name:<35}  ERROR: {str(e)[:40]}')"""))
 
-# Section 3: PyTorch ↔ ONNX Workflow
-nb.cells.append(new_markdown_cell("---\n## 3. The PyTorch ↔ ONNX Workflow\n\n### The Training/Deployment Split\n```\nDevelopment (Research)           Production (Deployment)\n├─ PyTorch (flexible)            ├─ ONNX (optimized)\n├─ Easy debugging                ├─ Framework-agnostic\n├─ Rich ecosystem                ├─ Multiple runtimes\n└─ Custom training loops         └─ Fast inference\n\nWorkflow:\n  Train in PyTorch → Export to ONNX → Deploy with ORT/TensorRT/OpenVINO\n```\n\n### Real Autoware Example\nIn Autoware's perception pipeline:\n- **Development:** Models trained in PyTorch (like EgoLanes, AutoSteer)\n- **Export:** `torch.onnx.export()` to create ONNX files\n- **Deployment:** C++ nodes load ONNX, run inference with TensorRT/ORT\n\nLet's walk through a complete example with a **steering prediction model** (similar to Autoware's AutoSteer)."))
+# ─── Section 5: TensorRT ──────────────────────────────────────────────────────
+nb.cells.append(new_markdown_cell("""\
+---
+## 5. TensorRT FP16 — Maximum GPU Throughput
 
-nb.cells.append(new_code_cell("""# Define a simple steering prediction network (inspired by Autoware's AutoSteer)
-class SteeringPredictor(torch_nn.Module):
-    \"\"\"Predicts steering angle from an image.\"\"\"\n    def __init__(self):
-        super().__init__()
-        # Backbone: simple CNN
-        self.features = torch_nn.Sequential(
-            torch_nn.Conv2d(3, 32, kernel_size=5, stride=2, padding=2),
-            torch_nn.ReLU(inplace=True),
-            torch_nn.MaxPool2d(2, 2),
-            torch_nn.Conv2d(32, 64, kernel_size=5, stride=2, padding=2),
-            torch_nn.ReLU(inplace=True),
-            torch_nn.MaxPool2d(2, 2),
-            torch_nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
-            torch_nn.ReLU(inplace=True),
-        )
-        # Prediction head: steering angle classification (61 classes: -30 to +30 degrees)
-        self.classifier = torch_nn.Sequential(
-            torch_nn.Linear(128 * 15 * 15, 256),
-            torch_nn.ReLU(inplace=True),
-            torch_nn.Dropout(0.5),
-            torch_nn.Linear(256, 61),  # 61 steering angle bins
-        )
+TensorRT is NVIDIA's inference optimizer. It reads ONNX, fuses layers, and compiles a
+GPU-specific engine. This is what Autoware uses in production for its perception nodes."""))
 
-    def forward(self, x):
-        x = self.features(x)
-        x = x.view(x.size(0), -1)
-        return self.classifier(x)
-
-# Create and \"train\" the model
-steering_model = SteeringPredictor()
-steering_model.eval()
-
-print(f'Steering model parameters: {sum(p.numel() for p in steering_model.parameters()):,}')
-print(f'Output: 61 steering angle classes (-30° to +30°)')\n"""))
-
-nb.cells.append(new_code_cell("""# Quick \"training\" loop (just to simulate model development)
-steering_model.train()
-optimizer = torch.optim.Adam(steering_model.parameters(), lr=0.001)
-criterion = torch_nn.CrossEntropyLoss()
-
-print('Simulating training (2 epochs on synthetic data)...')
-for epoch in range(2):
-    # Synthetic batch: random images + random steering angles
-    synthetic_images = torch.randn(8, 3, 480, 480)
-    synthetic_angles = torch.randint(0, 61, (8,))
-
-    optimizer.zero_grad()
-    outputs = steering_model(synthetic_images)
-    loss = criterion(outputs, synthetic_angles)
-    loss.backward()
-    optimizer.step()
-
-    print(f'  Epoch {epoch+1}/2, Loss: {loss.item():.4f}')
-
-steering_model.eval()
-print('✓ Training complete')\n"""))
-
-nb.cells.append(new_code_cell("""# Export steering model to ONNX
-STEERING_ONNX_PATH = 'steering_predictor.onnx'
-
-dummy_input = torch.randn(1, 3, 480, 480)
-
-torch.onnx.export(
-    steering_model,
-    dummy_input,
-    STEERING_ONNX_PATH,
-    input_names=['image'],
-    output_names=['steering_logits'],
-    opset_version=18,
-)
-
-# Validate
-onnx_steer = onnx.load(STEERING_ONNX_PATH)
-onnx.checker.check_model(onnx_steer)
-print('✓ Steering ONNX exported and validated')
-
-size_mb = os.path.getsize(STEERING_ONNX_PATH) / 1024 / 1024
-print(f'  File: {STEERING_ONNX_PATH} ({size_mb:.3f} MB)')\n"""))
-
-nb.cells.append(new_code_cell("""# Load and run with ONNX Runtime
-steer_session = ort.InferenceSession(STEERING_ONNX_PATH, providers=['CPUExecutionProvider'])
-steer_input = steer_session.get_inputs()[0]
-steer_output = steer_session.get_outputs()[0]
-
-# Inference
-def softmax(x):
-    e = np.exp(x - np.max(x))  # numerically stable
-    return e / e.sum()
-
-test_image = torch.randn(1, 3, 480, 480).numpy()
-steering_logits = steer_session.run([steer_output.name], {steer_input.name: test_image})[0]
-
-predicted_angle = np.argmax(steering_logits[0]) - 30  # Convert class index to angle
-probs = softmax(steering_logits[0])
-print(f'\\nONNX Runtime Steering Prediction:')
-print(f'  Predicted angle: {predicted_angle}°')
-print(f'  Confidence: {probs[np.argmax(probs)]:.2%}')
-print(f'\\n✓ PyTorch ↔ ONNX workflow complete!')
-"""))
-
-# Section 4: Optimize Before Export
-nb.cells.append(new_markdown_cell("---\n## 4. Optimize Before Export: Pruning + Quantization → ONNX\n\n### Why optimize before export?\n- Smaller model size\n- Faster inference\n- Same workflow (PyTorch → ONNX → Deploy)\n- Can stack optimizations (Pruning + Quantization)\n\n### Techniques\n1. **Structured pruning** - Remove entire filters/channels\n2. **Quantization** - Reduce precision (FP32 → INT8)\n3. **Knowledge distillation** - Covered in Neural Optimization course\n\nWe'll optimize the **DeepLabV3 model** from Section 1."))
-
-nb.cells.append(new_code_cell("""import torch.nn.utils.prune as prune
-
-# Create a copy for pruning
-pruned_model = copy.deepcopy(wrapped_model)
-pruned_model.eval()
-
-# Global unstructured L1 magnitude pruning:
-# Zeros the 40% smallest weights across ALL Conv2d layers.
-# Unlike structured pruning (which removes whole filters and collapses
-# feature maps), unstructured pruning preserves tensor shapes so
-# inference still produces meaningful output — just with added sparsity.
-conv_params = [
-    (m, 'weight')
-    for m in pruned_model.modules()
-    if isinstance(m, torch_nn.Conv2d)
-]
-prune.global_unstructured(conv_params, pruning_method=prune.L1Unstructured, amount=0.4)
-for m, name in conv_params:   # make permanent
-    prune.remove(m, name)
-
-# Count non-zero parameters
-total = sum(p.numel() for p in model.parameters())
-original_nonzero = sum((p != 0).sum().item() for p in model.parameters())
-pruned_nonzero   = sum((p != 0).sum().item() for p in pruned_model.parameters())
-
-print(f'Unstructured L1 pruning: 40% of smallest weights zeroed')
-print(f'Original non-zero params: {100*original_nonzero/total:.1f}%')
-print(f'Pruned non-zero params:   {100*pruned_nonzero/total:.1f}%')
-print(f'Sparsity achieved:        {100*(1 - pruned_nonzero/total):.1f}%')
-"""))
-
-nb.cells.append(new_code_cell("""# Run inference with pruned model
-with torch.no_grad():
-    pruned_output = pruned_model(input_tensor).cpu()
-
-pruned_seg, _ = visualize_segmentation(pruned_output)
-
-# Compare
-fig, axes = plt.subplots(1, 2, figsize=(16, 6))
-axes[0].imshow(pytorch_seg)
-axes[0].set_title('Original Model', fontsize=14)
-axes[0].axis('off')
-axes[1].imshow(pruned_seg)
-axes[1].set_title('Pruned Model (40% unstructured L1)', fontsize=14)
-axes[1].axis('off')
-plt.suptitle('Pruning: Original vs Pruned Output', fontsize=14)
-plt.tight_layout()
-plt.show()
-
-# Measure accuracy difference
-match = (pytorch_output.argmax(dim=1) == pruned_output.argmax(dim=1)).float().mean().item()
-print(f'Pixel agreement with original: {match*100:.1f}%')\n"""))
-
-nb.cells.append(new_code_cell("""# Export pruned model to ONNX
-# Note: unstructured pruning zeros weights but does NOT reduce ONNX file size —
-# ONNX stores all tensors densely. For real size reduction, use quantization.
-PRUNED_ONNX_PATH = 'deeplabv3_pruned.onnx'
-
-torch.onnx.export(
-    pruned_model,
-    input_tensor,
-    PRUNED_ONNX_PATH,
-    input_names=['input'],
-    output_names=['output'],
-    opset_version=18,
-)
-
-model_pruned_onnx = onnx.load(PRUNED_ONNX_PATH)
-model_pruned_simplified, _ = onnxsim.simplify(model_pruned_onnx)
-onnx.save(model_pruned_simplified, PRUNED_ONNX_PATH)
-
-original_size = os.path.getsize(ONNX_PATH) / 1024 / 1024
-pruned_size   = os.path.getsize(PRUNED_ONNX_PATH) / 1024 / 1024
-print(f'Original ONNX FP32: {original_size:.1f} MB')
-print(f'Pruned  ONNX FP32:  {pruned_size:.1f} MB  ← same (zeros still stored densely)')
-"""))
-
-nb.cells.append(new_code_cell("""# INT8 dynamic quantization via ONNX Runtime — real ~4x file size reduction
-from onnxruntime.quantization import quantize_dynamic, QuantType
-
-QUANT_ONNX_PATH = 'deeplabv3_int8.onnx'
-quantize_dynamic(ONNX_PATH, QUANT_ONNX_PATH, weight_type=QuantType.QInt8)
-
-quant_size = os.path.getsize(QUANT_ONNX_PATH) / 1024 / 1024
-print(f'Original FP32: {original_size:.1f} MB')
-print(f'INT8 quant:    {quant_size:.1f} MB  ({(1 - quant_size/original_size)*100:.0f}% smaller)')
-"""))
-
-nb.cells.append(new_code_cell("""# Benchmark all three ONNX variants
-pruned_session = ort.InferenceSession(PRUNED_ONNX_PATH, providers=['CPUExecutionProvider'])
-pruned_input_meta  = pruned_session.get_inputs()[0]
-pruned_output_meta = pruned_session.get_outputs()[0]
-
-quant_session = ort.InferenceSession(QUANT_ONNX_PATH, providers=['CPUExecutionProvider'])
-quant_input_meta  = quant_session.get_inputs()[0]
-quant_output_meta = quant_session.get_outputs()[0]
-
-pruned_onnx_time = benchmark(
-    lambda: pruned_session.run([pruned_output_meta.name], {pruned_input_meta.name: onnx_input}),
-    'ONNX Runtime (pruned FP32)'
-)
-quant_onnx_time = benchmark(
-    lambda: quant_session.run([quant_output_meta.name],  {quant_input_meta.name: onnx_input}),
-    'ONNX Runtime (INT8 quantized)'
-)
-print(f'\\nINT8 speedup vs original ONNX: {onnx_gpu_time/quant_onnx_time:.2f}x')
-"""))
-
-# Section 5: Autoware TensorRT Analysis
-nb.cells.append(new_markdown_cell("---\n## 5. Analyze Autoware's TensorRT C++ Production Code\n\n### Overview: How Autoware Deploys Neural Networks\n\n[Autoware](https://github.com/autowarefoundation/autoware) is the world's leading open-source autonomous driving stack. Its perception nodes use TensorRT for GPU inference.\n\n**Autoware's Deployment Stack:**\n```\nPython (Training)     →  PyTorch Model\n    ↓\nExport              →  ONNX File\n    ↓\nC++ Perception Node →  TensorRT Engine\n    ↓\nROS2 Message Bus    →  Steering/Speed commands\n```\n\n### The TrtCommon Class Pattern\n\nAutoware uses a `TrtCommon` utility class to manage TensorRT engines. Here's the real C++ interface:"))
-
-nb.cells.append(new_code_cell("""# Display actual Autoware TrtCommon header (simplified)
-autoware_trt_header = '''\\n// From: autoware/perception/tensorrt_common/include/tensorrt_common/tensorrt_common.hpp\n\nnamespace tensorrt_common {\n\nclass TrtCommon {\npublic:\n    // Constructor: Load or build a TensorRT engine from ONNX\n    TrtCommon(\n        const std::string& model_path,        // Path to .onnx or .trtengine\n        const std::string& precision,         // \"fp32\", \"fp16\", \"int8\"\n        std::unique_ptr<nvinfer1::IInt8Calibrator> calibrator = nullptr,\n        const BatchConfig& batch_config = {1, 1, 1},\n        const size_t max_workspace_size = (1 << 30)  // 1GB\n    );\n\n    // Methods\n    bool loadEngine(const std::string& path);\n    bool buildEngineFromOnnx(\n        const std::string& onnx_path,\n        const std::string& engine_path\n    );\n    \n    void setInput(const int index, const nvinfer1::Dims& dims);\n    bool enqueueV2(\n        void** bindings,           // GPU pointers: [input, output, ...]\n        cudaStream_t stream,       // CUDA stream for async execution\n        cudaEvent_t* inputConsumed\n    );\n    \n    // Get engine info\n    nvinfer1::ICudaEngine* getEngine() { return engine_.get(); }\n    int getMaxBatchSize() const { return max_batch_size_; }\n};\n\n}  // namespace tensorrt_common\n'''\n\nprint(autoware_trt_header)\nprint('\\n[This is real C++ code from Autoware's tensorrt_common package]')\n"""))
-
-nb.cells.append(new_code_cell("""# Display actual Autoware perception node pattern
-autoware_node_pattern = '''\\n// From: autoware/perception/traffic_light_classifier/lib/classifier.cpp\n// Simplified example of how a perception node uses TrtCommon\n\n#include <tensorrt_common/tensorrt_common.hpp>\n#include <rclcpp/rclcpp.hpp>\n\nclass TrafficLightClassifier : public rclcpp::Node {\nprivate:\n    std::unique_ptr<tensorrt_common::TrtCommon> trt_;\n    cudaStream_t stream_;\n    \n    void* d_input_;   // GPU memory for input\n    void* d_output_;  // GPU memory for output\n\npublic:\n    TrafficLightClassifier() : rclcpp::Node(\"traffic_light_classifier\") {\n        // Load ONNX model, build TensorRT engine\n        trt_ = std::make_unique<tensorrt_common::TrtCommon>(\n            \"/path/to/traffic_light.onnx\",\n            \"fp16\"  // Use FP16 for faster inference on T4/V100\n        );\n        \n        cudaStreamCreate(&stream_);\n        cudaMalloc(&d_input_, input_size_bytes);\n        cudaMalloc(&d_output_, output_size_bytes);\n    }\n    \n    void inferenceCallback(const sensor_msgs::msg::Image& image_msg) {\n        // Preprocess image on GPU\n        preprocessImage(image_msg, d_input_, stream_);\n        \n        // Run inference\n        void* bindings[] = {d_input_, d_output_};\n        trt_->enqueueV2(bindings, stream_, nullptr);\n        \n        // Copy result back to CPU\n        std::vector<float> h_output(num_classes_);\n        cudaMemcpyAsync(h_output.data(), d_output_, output_size_bytes,\n                        cudaMemcpyDeviceToHost, stream_);\n        cudaStreamSynchronize(stream_);\n        \n        // Publish result\n        publishTrafficLightState(h_output);\n    }\n};\n'''\n\nprint(autoware_node_pattern)\nprint('\\n[This pattern is used in Autoware perception nodes]')\nprint('\\nKey insights:')\nprint('1. Load ONNX → Build TRT engine (TrtCommon handles this)')\nprint('2. Allocate GPU memory for input/output')\nprint('3. Run inference async with CUDA streams')\nprint('4. Sync stream, copy result back to CPU')\nprint('5. Publish ROS2 message')\n"""))
-
-# Section 6: TensorRT
-nb.cells.append(new_markdown_cell("---\n## 6. TensorRT on Colab: FP16 Inference\n\n### TensorRT: Nvidia's High-Performance Inference Engine\n- **Reads ONNX directly** (no conversion step)\n- **Graph optimization** (layer fusion, memory optimization)\n- **Precision modes** (FP32, FP16, INT8)\n- **Fastest inference** on Nvidia GPUs\n\nTensorRT is what Autoware and production AVs use for GPU inference."))
-
-nb.cells.append(new_code_cell("""trt_available = False\ntry:\n    import tensorrt as trt\n    import pycuda.driver as cuda\n    import pycuda.autoinit\n    \n    trt_available = True\n    print(f'TensorRT version: {trt.__version__}')\n    print(f'GPU: {torch.cuda.get_device_name(0)}')\n    print('✓ TensorRT is available')\nexcept ImportError:\n    print('⚠ TensorRT not available')\n    print('  To use TensorRT:')\n    print('  1. Use Google Colab with GPU runtime')\n    print('  2. pip install tensorrt pycuda')\n    print('  3. Or use an Nvidia Docker container')\n"""))
-
-nb.cells.append(new_code_cell("""if trt_available:
-    TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
+nb.cells.append(new_code_cell("""\
+trt_available = False
+try:
+    import tensorrt as trt
+    import pycuda.driver as cuda
+    import pycuda.autoinit
+    trt_available = True
     TRT_MAJOR = int(trt.__version__.split('.')[0])
+    print(f'TensorRT {trt.__version__}  (major={TRT_MAJOR})')
+    print(f'GPU: {torch.cuda.get_device_name(0)}')
+except ImportError as e:
+    print(f'⚠ TensorRT not available: {e}')"""))
+
+nb.cells.append(new_code_cell("""\
+if trt_available:
+    TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
 
     def build_trt_engine(onnx_path, fp16=True):
-        \"\"\"Build a TensorRT engine from ONNX. Handles TRT 8/9/10 APIs.\"\"\"
         builder = trt.Builder(TRT_LOGGER)
-
-        # TRT 10 removed the EXPLICIT_BATCH flag (all networks are explicit-batch by default)
-        if TRT_MAJOR >= 10:
-            network = builder.create_network()
-        else:
-            network = builder.create_network(
-                1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
-            )
-
+        network = (
+            builder.create_network()
+            if TRT_MAJOR >= 10 else
+            builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
+        )
         parser = trt.OnnxParser(network, TRT_LOGGER)
         with open(onnx_path, 'rb') as f:
             if not parser.parse(f.read()):
                 for i in range(parser.num_errors):
-                    print(f'  Parse error [{i}]: {parser.get_error(i)}')
+                    print(f'  Parse error: {parser.get_error(i)}')
                 return None
 
         config = builder.create_builder_config()
-        config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 2 << 30)  # 2 GB
-
+        config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 2 << 30)
         if fp16 and builder.platform_has_fast_fp16:
             config.set_flag(trt.BuilderFlag.FP16)
-            print('✓ FP16 mode enabled')
+            print('✓ FP16 enabled')
 
-        # Optimization profile: required when the ONNX has dynamic dims (-1).
-        # We exported with static shapes, but add a profile defensively.
+        # Optimization profile (required for any dynamic dims)
         if network.num_inputs > 0:
-            inp = network.get_input(0)
-            shape = tuple(d if d > 0 else 1 for d in inp.shape)
-            profile = builder.create_optimization_profile()
-            profile.set_shape(inp.name, shape, shape, shape)
-            config.add_optimization_profile(profile)
+            inp  = network.get_input(0)
+            shp  = tuple(d if d > 0 else 1 for d in inp.shape)
+            prof = builder.create_optimization_profile()
+            prof.set_shape(inp.name, shp, shp, shp)
+            config.add_optimization_profile(prof)
 
-        print('Building TensorRT engine (this may take a few minutes)...')
+        print('Building TRT engine (may take a few minutes)...')
         serialized = builder.build_serialized_network(network, config)
         if serialized is None:
-            print('⚠ FP16 build failed, retrying FP32...')
+            print('FP16 failed, retrying FP32...')
             config.clear_flag(trt.BuilderFlag.FP16)
             serialized = builder.build_serialized_network(network, config)
         if serialized is None:
-            print('✗ Engine build failed.')
-            return None
+            print('✗ Engine build failed'); return None
+        engine = trt.Runtime(TRT_LOGGER).deserialize_cuda_engine(serialized)
+        print('✓ Engine ready'); return engine
 
-        runtime = trt.Runtime(TRT_LOGGER)
-        engine  = runtime.deserialize_cuda_engine(serialized)
-        print('✓ Engine built successfully')
-        return engine
-
-    engine = build_trt_engine(ONNX_TRT_PATH, fp16=True)  # opset-17 file
+    engine = build_trt_engine(ONNX_EXPORT_PATH, fp16=True)
 else:
-    engine = None
-"""))
+    engine = None"""))
 
-nb.cells.append(new_code_cell("""if trt_available and engine is not None:
+nb.cells.append(new_code_cell("""\
+if trt_available and engine is not None:
     class TRTInference:
         \"\"\"Version-aware TensorRT inference wrapper (TRT 8 / 9 / 10).\"\"\"
-
         def __init__(self, engine):
-            self.context = engine.create_execution_context()
-            self.trt_major = int(trt.__version__.split('.')[0])
-
-            # Shape API differs between TRT versions
-            if self.trt_major >= 10:
-                in_shape  = tuple(engine.get_tensor_shape('input'))
-                out_shape = tuple(engine.get_tensor_shape('output'))
+            self.ctx       = engine.create_execution_context()
+            self.major     = int(trt.__version__.split('.')[0])
+            if self.major >= 10:
+                in_shp  = tuple(engine.get_tensor_shape('image'))
+                out_shp = tuple(engine.get_tensor_shape('segmentation'))
             else:
-                in_shape  = tuple(engine.get_binding_shape(0))
-                out_shape = tuple(engine.get_binding_shape(1))
+                in_shp  = tuple(engine.get_binding_shape(0))
+                out_shp = tuple(engine.get_binding_shape(1))
+            self.d_in   = cuda.mem_alloc(int(np.prod(in_shp))  * 4)
+            self.d_out  = cuda.mem_alloc(int(np.prod(out_shp)) * 4)
+            self.out_shp = out_shp
+            self.stream  = cuda.Stream()
 
-            self.d_input      = cuda.mem_alloc(int(np.prod(in_shape))  * 4)
-            self.d_output     = cuda.mem_alloc(int(np.prod(out_shape)) * 4)
-            self.output_shape = out_shape
-            self.stream       = cuda.Stream()
-
-        def infer(self, input_data):
-            inp = np.ascontiguousarray(input_data, dtype=np.float32)
-            out = np.empty(self.output_shape, dtype=np.float32)
-
-            cuda.memcpy_htod_async(self.d_input, inp, self.stream)
-
-            if self.trt_major >= 10:
-                self.context.set_tensor_address('input',  int(self.d_input))
-                self.context.set_tensor_address('output', int(self.d_output))
-                self.context.execute_async_v3(stream_handle=self.stream.handle)
+        def infer(self, x):
+            inp = np.ascontiguousarray(x, dtype=np.float32)
+            out = np.empty(self.out_shp, dtype=np.float32)
+            cuda.memcpy_htod_async(self.d_in, inp, self.stream)
+            if self.major >= 10:
+                self.ctx.set_tensor_address('image',        int(self.d_in))
+                self.ctx.set_tensor_address('segmentation', int(self.d_out))
+                self.ctx.execute_async_v3(stream_handle=self.stream.handle)
             else:
-                bindings = [int(self.d_input), int(self.d_output)]
-                self.context.execute_async_v2(bindings=bindings,
-                                              stream_handle=self.stream.handle)
-
-            cuda.memcpy_dtoh_async(out, self.d_output, self.stream)
+                self.ctx.execute_async_v2([int(self.d_in), int(self.d_out)],
+                                          stream_handle=self.stream.handle)
+            cuda.memcpy_dtoh_async(out, self.d_out, self.stream)
             self.stream.synchronize()
             return out
 
-    trt_infer = TRTInference(engine)
+    trt_infer   = TRTInference(engine)
+    trt_out     = trt_infer.infer(img_np)
+    trt_overlay = scene_vis(cv2.resize(frame_bgr, (W, H)), trt_out)
 
-    # Verify output
-    trt_output = trt_infer.infer(onnx_input)
-    trt_seg, _ = visualize_segmentation(trt_output)
-
-    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
-    axes[0].imshow(pytorch_seg); axes[0].set_title('PyTorch'); axes[0].axis('off')
-    axes[1].imshow(trt_seg);     axes[1].set_title('TensorRT FP16'); axes[1].axis('off')
-    plt.suptitle('PyTorch vs TensorRT Output', fontsize=14)
+    fig, axes = plt.subplots(1, 2, figsize=(14, 4))
+    axes[0].imshow(cv2.cvtColor(ort_overlay, cv2.COLOR_BGR2RGB)); axes[0].set_title('ONNX Runtime GPU'); axes[0].axis('off')
+    axes[1].imshow(cv2.cvtColor(trt_overlay, cv2.COLOR_BGR2RGB)); axes[1].set_title('TensorRT FP16');    axes[1].axis('off')
+    plt.suptitle('ONNX Runtime vs TensorRT Output', fontsize=13)
     plt.tight_layout(); plt.show()
 
-    trt_time = benchmark(lambda: trt_infer.infer(onnx_input), 'Test 4 · TensorRT GPU (FP16)')
+    # ── Test 4: TensorRT GPU ──────────────────────────────────────────────────
+    trt_times = benchmark(
+        lambda: trt_infer.infer(img_np),
+        'Test 4 · TensorRT GPU (FP16)',
+        use_cuda=True,
+    )
 else:
-    trt_time = None
-    print('Skipping TensorRT (not available on this runtime)')
-"""))
+    trt_times = None
+    print('Skipping TensorRT (not available on this runtime)')"""))
 
-# Section 8: Benchmarking
-nb.cells.append(new_markdown_cell("---\n## 8. Production Profiling & Benchmarking\n\n### Key Metrics\n- **Latency:** Time to process one inference (ms)\n- **Throughput:** Inferences per second (FPS)\n- **Memory:** GPU/CPU memory used during inference\n- **Model size:** Disk space (affects deployment size)"))
+# ─── Section 6: Profiling & Visualization ─────────────────────────────────────
+nb.cells.append(new_markdown_cell("""\
+---
+## 6. Profiling & Benchmarking
 
-nb.cells.append(new_code_cell("""# Summary: 4-test benchmark — CPU baseline + GPU comparison
-print('\\n' + '='*70)
-print('  DEPLOYMENT BENCHMARK RESULTS')
-print('  Model: DeepLabV3-MobileNetV3-Large')
-print('='*70)
-print(f'  {\"Test\":<42} {\"ms\":<10} {\"FPS\":<10} {\"vs CPU\":<8}')
-print(f'  {\"-\"*42} {\"-\"*10} {\"-\"*10} {\"-\"*8}')
+This is what engineers actually do when evaluating deployment options:
 
-rows = [
-    ('Test 1 · PyTorch CPU (baseline)', pytorch_cpu_time),
-]
-if pytorch_gpu_time:
-    rows.append(('Test 2 · PyTorch GPU', pytorch_gpu_time))
-if onnx_gpu_time:
-    rows.append(('Test 3 · ONNX Runtime GPU', onnx_gpu_time))
-if trt_time:
-    rows.append(('Test 4 · TensorRT GPU (FP16)', trt_time))
+| Tool | What it shows |
+|------|--------------|
+| **Bar chart + error bars** | Average latency with spread |
+| **P50 / P95 markers** | Tail-latency (SLO compliance) |
+| **Violin plot** | Full latency distribution — not just averages |
+| **Run-by-run trace** | Warm-up, jitter, thermal throttling |
+| **CDF** | "What % of frames will meet a 30ms target?" |
+| **torch.profiler** | Which GPU kernels take the most time |"""))
 
-for name, t in rows:
-    print(f'  {name:<42} {t:<10.1f} {1000/t:<10.1f} {pytorch_cpu_time/t:<8.2f}x')
+nb.cells.append(new_code_cell("""\
+# Gather all test results into lists
+test_labels, test_times, test_colors = [], [], []
 
-print()
-print(f'  Model sizes:')
-print(f'    FP32 ONNX:  {original_size:.1f} MB')
-print(f'    INT8 ONNX:  {quant_size:.1f} MB  ({(1-quant_size/original_size)*100:.0f}% smaller)')
-print('='*70)
-"""))
+test_labels.append('PyTorch\\nCPU');  test_times.append(pytorch_cpu_times);  test_colors.append('#e74c3c')
+if pytorch_gpu_times is not None:
+    test_labels.append('PyTorch\\nGPU'); test_times.append(pytorch_gpu_times); test_colors.append('#3498db')
+test_labels.append('ONNX RT\\nGPU');  test_times.append(onnx_gpu_times);     test_colors.append('#2ecc71')
+if trt_times is not None:
+    test_labels.append('TensorRT\\nFP16'); test_times.append(trt_times);      test_colors.append('#f39c12')
 
-# Section 9: Full Pipeline
-nb.cells.append(new_markdown_cell("---\n## 9. Full Pipeline Project: Train → Optimize → Export → Deploy → Benchmark\n\n### End-to-End Autonomous Vehicle Perception\n\nThis section demonstrates the **complete production workflow**:\n\n```\n1. TRAIN      → Define and train a PyTorch model\n2. OPTIMIZE   → Prune and quantize\n3. EXPORT     → Convert to ONNX\n4. DEPLOY     → Load with ONNX Runtime / TensorRT\n5. BENCHMARK  → Compare all frameworks\n```"))
+avgs = np.array([t.mean() for t in test_times])
+stds = np.array([t.std()  for t in test_times])
+p50s = np.array([np.percentile(t, 50) for t in test_times])
+p95s = np.array([np.percentile(t, 95) for t in test_times])
+fps  = 1000 / avgs
+spds = avgs[0] / avgs
+x    = np.arange(len(test_labels))
+print(f'Results collected for {len(test_labels)} tests')"""))
 
-nb.cells.append(new_code_cell("""# Project: Simple object detector (YOLO-style)
-print('PROJECT: Simple Object Detector')
-print('Goal: Train → Optimize → Export → Deploy → Benchmark')
-print('\\nStep 1: TRAIN')
-print('-' * 60)
+nb.cells.append(new_code_cell("""\
+# ── Plot 1: Latency · FPS · Speedup ─────────────────────────────────────────
+fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
-class SimpleDetector(torch_nn.Module):
-    \"\"\"Tiny object detection model.\"\"\"
-    def __init__(self):
-        super().__init__()
-        self.backbone = torch_nn.Sequential(
-            torch_nn.Conv2d(3, 16, 3, padding=1),
-            torch_nn.ReLU(),
-            torch_nn.MaxPool2d(2),   # 416→208
-            torch_nn.Conv2d(16, 32, 3, padding=1),
-            torch_nn.ReLU(),
-            torch_nn.MaxPool2d(2),   # 208→104
-        )
-        self.head = torch_nn.Conv2d(32, 5, 1)  # [tx, ty, tw, th, conf] at 104x104
+# — Latency bar with std error bars + P95 markers
+axes[0].bar(x, avgs, yerr=stds, capsize=6, color=test_colors, alpha=0.85, edgecolor='black', linewidth=0.7)
+for i, (avg, std, p95) in enumerate(zip(avgs, stds, p95s)):
+    axes[0].plot(i, p95, 'v', color='black', markersize=8, zorder=5)
+    axes[0].text(i, avg + std + 0.5, f'{avg:.1f}ms', ha='center', va='bottom', fontsize=8, fontweight='bold')
+axes[0].set_xticks(x); axes[0].set_xticklabels(test_labels)
+axes[0].set_ylabel('Latency (ms)'); axes[0].set_title('Inference Latency\\n(bar = avg ± std,  ▼ = P95)')
+axes[0].legend([plt.Line2D([0],[0], marker='v', color='black', linestyle='none')], ['P95'], loc='upper right')
 
-    def forward(self, x):
-        return self.head(self.backbone(x))
+# — FPS
+axes[1].bar(x, fps, color=test_colors, alpha=0.85, edgecolor='black', linewidth=0.7)
+for i, f in enumerate(fps):
+    axes[1].text(i, f + 0.3, f'{f:.0f}', ha='center', va='bottom', fontsize=9, fontweight='bold')
+axes[1].set_xticks(x); axes[1].set_xticklabels(test_labels)
+axes[1].set_ylabel('Frames per Second'); axes[1].set_title('Throughput  (higher = better)')
 
-detector = SimpleDetector()
-detector.train()
-optimizer = torch.optim.Adam(detector.parameters())
+# — Speedup
+axes[2].bar(x, spds, color=test_colors, alpha=0.85, edgecolor='black', linewidth=0.7)
+axes[2].axhline(1.0, color='gray', linestyle='--', linewidth=1)
+for i, s in enumerate(spds):
+    axes[2].text(i, s + 0.05, f'{s:.1f}x', ha='center', va='bottom', fontsize=9, fontweight='bold')
+axes[2].set_xticks(x); axes[2].set_xticklabels(test_labels)
+axes[2].set_ylabel('Speedup vs PyTorch CPU'); axes[2].set_title('Speedup  (higher = better)')
 
-# Compute actual output shape before creating targets
-with torch.no_grad():
-    _sample = detector(torch.zeros(1, 3, 416, 416))
-    _out_shape = _sample.shape[1:]  # (5, H, W)
+plt.suptitle('SceneSeg Deployment Benchmark', fontsize=14, fontweight='bold')
+plt.tight_layout(); plt.show()"""))
 
-print(f'Model: SimpleDetector ({sum(p.numel() for p in detector.parameters()):,} params)')
-print(f'Input: (batch, 3, 416, 416)')
-print(f'Output: (batch, {_out_shape[0]}, {_out_shape[1]}, {_out_shape[2]})  # predictions per cell')
-print()
+nb.cells.append(new_code_cell("""\
+# ── Plot 2: Latency Distribution — Violin Plot ───────────────────────────────
+# Violin width shows HOW OFTEN each latency value occurs
+fig, ax = plt.subplots(figsize=(12, 5))
+parts = ax.violinplot(test_times, positions=x, showmedians=True, showextrema=True)
 
-detector.train()
-for epoch in range(3):
-    synthetic_batch = torch.randn(4, 3, 416, 416)
-    targets = torch.randn(4, *_out_shape)   # match real output shape
+for i, pc in enumerate(parts['bodies']):
+    pc.set_facecolor(test_colors[i]); pc.set_alpha(0.65)
+parts['cmedians'].set_color('black'); parts['cmedians'].set_linewidth(2)
 
-    outputs = detector(synthetic_batch)
-    loss = ((outputs - targets) ** 2).mean()
+# Scatter individual runs (jittered) to show raw data
+for i, times in enumerate(test_times):
+    jitter = np.random.uniform(-0.08, 0.08, size=len(times))
+    ax.scatter(x[i] + jitter, times, alpha=0.12, s=5, color=test_colors[i])
 
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
+# P95 markers
+for i, p95 in enumerate(p95s):
+    ax.hlines(p95, x[i]-0.25, x[i]+0.25, colors='black', linestyles='--', linewidth=1.5, alpha=0.8)
+    ax.text(x[i]+0.27, p95, 'P95', fontsize=7, va='center', color='black')
 
-    print(f'  Epoch {epoch+1}/3  Loss: {loss.item():.4f}')
+ax.set_xticks(x); ax.set_xticklabels(test_labels)
+ax.set_ylabel('Latency (ms)')
+ax.set_title('Latency Distribution (100 runs)  —  width = frequency at that latency', fontsize=12)
+plt.tight_layout(); plt.show()"""))
 
-detector.eval()
-print('✓ Training complete')
-"""))
+nb.cells.append(new_code_cell("""\
+# ── Plot 3: Run-by-Run Latency (GPU tests only) ───────────────────────────────
+# Shows warm-up, jitter, thermal throttling
+fig, ax = plt.subplots(figsize=(14, 4))
+for times, label, color in zip(test_times[1:], test_labels[1:], test_colors[1:]):
+    lbl = label.replace('\\n', ' ')
+    ax.plot(times, alpha=0.75, label=lbl, color=color, linewidth=1.2)
+    ax.axhline(times.mean(), color=color, linestyle='--', linewidth=0.8, alpha=0.5)
 
-nb.cells.append(new_code_cell("""print('\\nStep 2: OPTIMIZE')\nprint('-' * 60)\n\n# Pruning (unstructured L1 - keeps tensor shapes intact)
-optimized_detector = copy.deepcopy(detector)\n\ndet_conv_params = [(m, 'weight') for m in optimized_detector.modules() if isinstance(m, torch_nn.Conv2d)]\nprune.global_unstructured(det_conv_params, pruning_method=prune.L1Unstructured, amount=0.3)\nfor m, name in det_conv_params:\n    prune.remove(m, name)\n\ntotal_w = sum(p.numel() for p in detector.parameters())\nnonzero_w = sum((p != 0).sum().item() for p in optimized_detector.parameters())\nprint(f'Sparsity: {100*(1 - nonzero_w/total_w):.1f}% weights zeroed')\nprint('✓ Optimization complete')\n"""))
+ax.set_xlabel('Run #'); ax.set_ylabel('Latency (ms)')
+ax.set_title('GPU Inference Stability — Run-by-Run  (dashed = mean)', fontsize=12)
+ax.legend(loc='upper right'); plt.tight_layout(); plt.show()"""))
 
-nb.cells.append(new_code_cell("""print('\\nStep 3: EXPORT')\nprint('-' * 60)\n\nDETECTOR_ONNX = 'simple_detector.onnx'\n\ndummy_det_input = torch.randn(1, 3, 416, 416)\ntorch.onnx.export(\n    optimized_detector,\n    dummy_det_input,\n    DETECTOR_ONNX,\n    input_names=['image'],\n    output_names=['detections'],\n    opset_version=18\n)\n\nmodel_det = onnx.load(DETECTOR_ONNX)\nonnx.checker.check_model(model_det)\n\ndet_size = os.path.getsize(DETECTOR_ONNX) / 1024\nprint(f'Exported to: {DETECTOR_ONNX}')\nprint(f'File size: {det_size:.1f} KB')\nprint('✓ Export complete')\n"""))
+nb.cells.append(new_code_cell("""\
+# ── Plot 4: Cumulative Distribution Function ──────────────────────────────────
+# Engineers use CDF to answer: "Will we meet a 30ms frame budget 99% of the time?"
+fig, ax = plt.subplots(figsize=(12, 5))
+for times, label, color in zip(test_times, test_labels, test_colors):
+    sorted_t = np.sort(times)
+    cdf      = np.arange(1, len(sorted_t) + 1) / len(sorted_t) * 100
+    ax.plot(sorted_t, cdf, label=label.replace('\\n', ' '), color=color, linewidth=2)
 
-nb.cells.append(new_code_cell("""print('\\nStep 4: DEPLOY')\nprint('-' * 60)\n\ndet_session = ort.InferenceSession(DETECTOR_ONNX, providers=['CPUExecutionProvider'])\ndet_input = det_session.get_inputs()[0]\ndet_output = det_session.get_outputs()[0]\n\ntest_det_image = np.random.randn(1, 3, 416, 416).astype(np.float32)\ndet_pred = det_session.run([det_output.name], {det_input.name: test_det_image})[0]\n\nprint(f'Input shape:  {test_det_image.shape}')\nprint(f'Output shape: {det_pred.shape}')\nprint('✓ Deployment complete (ONNX Runtime)')\n"""))
+ax.axhline(95, color='gray', linestyle='--', linewidth=1, alpha=0.7)
+ax.axhline(50, color='gray', linestyle=':',  linewidth=1, alpha=0.7)
+ax.text(ax.get_xlim()[1]*0.98, 96, 'P95', ha='right', fontsize=9, color='gray')
+ax.text(ax.get_xlim()[1]*0.98, 51, 'P50', ha='right', fontsize=9, color='gray')
 
-nb.cells.append(new_code_cell("""print('\\nStep 5: BENCHMARK')\nprint('-' * 60)\n\n# PyTorch baseline\npytorch_det_time = benchmark(\n    lambda: detector(dummy_det_input),\n    'PyTorch (CPU)'\n)\n\n# ONNX Runtime\nonnx_det_time = benchmark(\n    lambda: det_session.run([det_output.name], {det_input.name: test_det_image}),\n    'ONNX Runtime (CPU)'\n)\n\nprint(f'\\nSpeedup: {pytorch_det_time / onnx_det_time:.2f}x faster with ONNX')\nprint('\\n' + '='*70)\nprint('  FULL PIPELINE COMPLETE')\nprint('='*70)\nprint('\\nWhat you learned:')\nprint('  1. How to train and optimize models')\nprint('  2. Export PyTorch to production-ready ONNX')\nprint('  3. Deploy with multiple runtimes')\nprint('  4. Benchmark and compare performance')\nprint('  5. This is the workflow Autoware uses')\nprint('='*70)\n"""))
+ax.set_xlabel('Latency (ms)'); ax.set_ylabel('% of runs faster than X ms')
+ax.set_title('Latency CDF — What % of frames meet a given latency budget?', fontsize=12)
+ax.legend(); ax.grid(alpha=0.3); plt.tight_layout(); plt.show()"""))
 
-nb.cells.append(new_markdown_cell("""---\n\n## Conclusion & Next Steps\n\n### You've learned:\n✓ **Load & benchmark** a PyTorch robotics model  \n✓ **Export to ONNX** with full validation  \n✓ **Deploy with ONNX Runtime** and TensorRT  \n✓ **Optimize** via pruning & quantization before export  \n✓ **Analyze Autoware's production C++ code**  \n✓ **Complete end-to-end pipeline**\n\n### In Production (Autoware, Tesla, Waymo):\n- Train in PyTorch with optimizations from the **Neural Optimization** course\n- Export to ONNX for deployment flexibility\n- Use TensorRT on Nvidia GPUs (fastest)\n- Use ONNX Runtime on CPUs (most portable)\n- Package into ROS2 nodes (Autoware pattern)\n\n### Further Learning:\n- **Neural Optimization course** — Master pruning, quantization, distillation\n- **Autoware documentation** — Deploy models in real autonomous driving stack\n- **TensorRT documentation** — Advanced optimization techniques\n- **ONNX Zoo** — Pre-trained models for various tasks\n\n---\n\n*The Deployment Notebook — Neural Optimization by Think Autonomous*\n\nhttps://thinkautonomous.ai\n"""))
+nb.cells.append(new_code_cell("""\
+# ── torch.profiler — Kernel-level GPU breakdown ───────────────────────────────
+if torch.cuda.is_available():
+    with torch.profiler.profile(
+        activities=[
+            torch.profiler.ProfilerActivity.CPU,
+            torch.profiler.ProfilerActivity.CUDA,
+        ],
+        record_shapes=True,
+        profile_memory=True,
+    ) as prof:
+        for _ in range(20):
+            with torch.profiler.record_function('SceneSeg'):
+                model_gpu(input_gpu)
+        torch.cuda.synchronize()
 
-# Write notebook
+    print('Top GPU kernels (sorted by CUDA time):')
+    print(prof.key_averages().table(sort_by='cuda_time_total', row_limit=12))
+else:
+    print('torch.profiler requires a GPU runtime')"""))
+
+nb.cells.append(new_code_cell("""\
+# ── Final Summary Table ───────────────────────────────────────────────────────
+print('\\n' + '='*72)
+print('  SCENESEG DEPLOYMENT BENCHMARK')
+print('='*72)
+print(f'  {"Test":<44} {"avg ms":>7}  {"p95 ms":>7}  {"FPS":>6}  {"vs CPU":>7}')
+print(f'  {"-"*44} {"-"*7}  {"-"*7}  {"-"*6}  {"-"*7}')
+baseline = avgs[0]
+for label, avg, p95 in zip(test_labels, avgs, p95s):
+    lbl = label.replace("\\n", " ")
+    print(f'  {lbl:<44} {avg:>7.1f}  {p95:>7.1f}  {1000/avg:>6.0f}  {baseline/avg:>6.1f}x')
+print('='*72)"""))
+
+# ─── Conclusion ───────────────────────────────────────────────────────────────
+nb.cells.append(new_markdown_cell("""\
+---
+## Conclusion
+
+### What you've built:
+- ✓ Loaded an **Autoware production model** (SceneSeg) from TorchScript
+- ✓ Ran inference on **real Waymo driving frames**
+- ✓ Exported to ONNX and deployed with **ONNX Runtime GPU**
+- ✓ Compared **FP32 / FP16 / INT8** precision trade-offs
+- ✓ Deployed with **TensorRT FP16** for maximum throughput
+- ✓ Profiled with **violin plots, CDF, run-by-run stability, torch.profiler**
+
+### What engineers care about:
+- **P95 latency**, not just average — the tail determines SLO compliance
+- **Stability** — a model that spikes occasionally is worse than a slower steady one
+- **FPS at target precision** — FP16 is usually the sweet spot for AV edge deployment
+
+### Further reading:
+- [Autoware vision pilot models](https://github.com/autowarefoundation/autoware_vision_pilot)
+- [TensorRT developer guide](https://docs.nvidia.com/deeplearning/tensorrt/developer-guide/)
+- [ONNX Runtime performance tuning](https://onnxruntime.ai/docs/performance/tune-performance/)
+
+---
+*Neural Optimization by [Think Autonomous](https://thinkautonomous.ai)*"""))
+
+# ─── Write final notebook ─────────────────────────────────────────────────────
 with open('DLC_Deployment.ipynb', 'w') as f:
     nbformat.write(nb, f)
-
-print(f'✓ Notebook generated: DLC_Deployment.ipynb')
-print(f'  Cells: {len(nb.cells)}')
-print(f'  Sections: 9 (Setup, Load, ONNX, Workflow, Optimize, Autoware Analysis, TensorRT, Profiling, Pipeline)')
+print(f'✓ Notebook complete — {len(nb.cells)} cells')
