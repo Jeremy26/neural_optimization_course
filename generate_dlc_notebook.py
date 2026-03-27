@@ -213,7 +213,7 @@ torch.onnx.export(
     verbose=False,
     input_names=['input'],
     output_names=['output'],
-    opset_version=17,
+    opset_version=12,
     dynamic_axes={
         'input': {0: 'batch_size'},
         'output': {0: 'batch_size'}
@@ -354,7 +354,7 @@ torch.onnx.export(
     STEERING_ONNX_PATH,
     input_names=['image'],
     output_names=['steering_logits'],
-    opset_version=17,
+    opset_version=12,
     dynamic_axes={'image': {0: 'batch_size'}, 'steering_logits': {0: 'batch_size'}}
 )
 
@@ -372,18 +372,20 @@ steer_input = steer_session.get_inputs()[0]
 steer_output = steer_session.get_outputs()[0]
 
 # Inference
+def softmax(x):
+    e = np.exp(x - np.max(x))  # numerically stable
+    return e / e.sum()
+
 test_image = torch.randn(1, 3, 480, 480).numpy()
 steering_logits = steer_session.run([steer_output.name], {steer_input.name: test_image})[0]
 
 predicted_angle = np.argmax(steering_logits[0]) - 30  # Convert class index to angle
+probs = softmax(steering_logits[0])
 print(f'\\nONNX Runtime Steering Prediction:')
 print(f'  Predicted angle: {predicted_angle}°')
-print(f'  Confidence: {softmax(steering_logits[0])[np.argmax(steering_logits[0])]:.2%}')
-
-def softmax(x):
-    return np.exp(x) / np.exp(x).sum()
-
-print(f'\\n✓ PyTorch ↔ ONNX workflow complete!')\n"""))
+print(f'  Confidence: {probs[np.argmax(probs)]:.2%}')
+print(f'\\n✓ PyTorch ↔ ONNX workflow complete!')
+"""))
 
 # Section 4: Optimize Before Export
 nb.cells.append(new_markdown_cell("---\n## 4. Optimize Before Export: Pruning + Quantization → ONNX\n\n### Why optimize before export?\n- Smaller model size\n- Faster inference\n- Same workflow (PyTorch → ONNX → Deploy)\n- Can stack optimizations (Pruning + Quantization)\n\n### Techniques\n1. **Structured pruning** - Remove entire filters/channels\n2. **Quantization** - Reduce precision (FP32 → INT8)\n3. **Knowledge distillation** - Covered in Neural Optimization course\n\nWe'll optimize the **DeepLabV3 model** from Section 1."))
@@ -394,24 +396,30 @@ nb.cells.append(new_code_cell("""import torch.nn.utils.prune as prune
 pruned_model = copy.deepcopy(wrapped_model)
 pruned_model.eval()
 
-# Apply structured L1 pruning to Conv2d layers
-pruned_layers = 0
-for name, module in pruned_model.named_modules():
-    if isinstance(module, torch_nn.Conv2d):
-        prune.ln_structured(module, name='weight', amount=0.3, n=1, dim=0)
-        prune.remove(module, 'weight')  # Make pruning permanent
-        pruned_layers += 1
-
-print(f'Pruned {pruned_layers} Conv2d layers (30% of filters removed)')
+# Global unstructured L1 magnitude pruning:
+# Zeros the 40% smallest weights across ALL Conv2d layers.
+# Unlike structured pruning (which removes whole filters and collapses
+# feature maps), unstructured pruning preserves tensor shapes so
+# inference still produces meaningful output — just with added sparsity.
+conv_params = [
+    (m, 'weight')
+    for m in pruned_model.modules()
+    if isinstance(m, torch_nn.Conv2d)
+]
+prune.global_unstructured(conv_params, pruning_method=prune.L1Unstructured, amount=0.4)
+for m, name in conv_params:   # make permanent
+    prune.remove(m, name)
 
 # Count non-zero parameters
-original_nonzero = sum((p != 0).sum().item() for p in model.parameters())
-pruned_nonzero = sum((p != 0).sum().item() for p in pruned_model.parameters())
 total = sum(p.numel() for p in model.parameters())
+original_nonzero = sum((p != 0).sum().item() for p in model.parameters())
+pruned_nonzero   = sum((p != 0).sum().item() for p in pruned_model.parameters())
 
-print(f'\\nOriginal non-zero params: {100*original_nonzero/total:.1f}%')
+print(f'Unstructured L1 pruning: 40% of smallest weights zeroed')
+print(f'Original non-zero params: {100*original_nonzero/total:.1f}%')
 print(f'Pruned non-zero params:   {100*pruned_nonzero/total:.1f}%')
-print(f'Sparsity achieved:        {100*(1 - pruned_nonzero/total):.1f}%')\n"""))
+print(f'Sparsity achieved:        {100*(1 - pruned_nonzero/total):.1f}%')
+"""))
 
 nb.cells.append(new_code_cell("""# Run inference with pruned model
 with torch.no_grad():
@@ -444,7 +452,7 @@ torch.onnx.export(
     PRUNED_ONNX_PATH,
     input_names=['input'],
     output_names=['output'],
-    opset_version=17,
+    opset_version=12,
     dynamic_axes={'input': {0: 'batch_size'}, 'output': {0: 'batch_size'}}
 )
 
@@ -484,9 +492,113 @@ nb.cells.append(new_markdown_cell("---\n## 6. TensorRT on Colab: FP16 Inference\
 
 nb.cells.append(new_code_cell("""trt_available = False\ntry:\n    import tensorrt as trt\n    import pycuda.driver as cuda\n    import pycuda.autoinit\n    \n    trt_available = True\n    print(f'TensorRT version: {trt.__version__}')\n    print(f'GPU: {torch.cuda.get_device_name(0)}')\n    print('✓ TensorRT is available')\nexcept ImportError:\n    print('⚠ TensorRT not available')\n    print('  To use TensorRT:')\n    print('  1. Use Google Colab with GPU runtime')\n    print('  2. pip install tensorrt pycuda')\n    print('  3. Or use an Nvidia Docker container')\n"""))
 
-nb.cells.append(new_code_cell("""if trt_available:\n    def build_trt_engine(onnx_path, fp16=True):\n        \"\"\"Build a TensorRT engine from ONNX.\"\"\"\n        TRT_LOGGER = trt.Logger(trt.Logger.WARNING)\n        builder = trt.Builder(TRT_LOGGER)\n        network = builder.create_network(\n            1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)\n        )\n        parser = trt.OnnxParser(network, TRT_LOGGER)\n        \n        with open(onnx_path, 'rb') as f:\n            if not parser.parse(f.read()):\n                for i in range(parser.num_errors):\n                    print(f'Parse error: {parser.get_error(i)}')\n                return None\n        \n        config = builder.create_builder_config()\n        config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 2 << 30)\n        \n        if fp16 and builder.platform_has_fast_fp16:\n            config.set_flag(trt.BuilderFlag.FP16)\n            print('✓ FP16 mode enabled')\n        \n        print('Building TensorRT engine...')\n        engine_data = builder.build_serialized_network(network, config)\n        runtime = trt.Runtime(TRT_LOGGER)\n        engine = runtime.deserialize_cuda_engine(engine_data)\n        print('✓ Engine built')\n        return engine\n    \n    engine = build_trt_engine(ONNX_PATH, fp16=True)\nelse:\n    engine = None\n"""))
+nb.cells.append(new_code_cell("""if trt_available:
+    TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
+    TRT_MAJOR = int(trt.__version__.split('.')[0])
 
-nb.cells.append(new_code_cell("""if trt_available and engine is not None:\n    class TRTInference:\n        def __init__(self, engine):\n            self.context = engine.create_execution_context()\n            self.d_input = cuda.mem_alloc(\n                int(np.prod(engine.get_tensor_shape('input'))) * 4\n            )\n            self.d_output = cuda.mem_alloc(\n                int(np.prod(engine.get_tensor_shape('output'))) * 4\n            )\n            self.output_shape = engine.get_tensor_shape('output')\n            self.stream = cuda.Stream()\n        \n        def infer(self, input_data):\n            input_data = np.ascontiguousarray(input_data, dtype=np.float32)\n            output_data = np.empty(self.output_shape, dtype=np.float32)\n            \n            cuda.memcpy_htod_async(self.d_input, input_data, self.stream)\n            self.context.set_tensor_address('input', int(self.d_input))\n            self.context.set_tensor_address('output', int(self.d_output))\n            self.context.execute_async_v3(stream_handle=self.stream.handle)\n            cuda.memcpy_dtoh_async(output_data, self.d_output, self.stream)\n            self.stream.synchronize()\n            return output_data\n    \n    trt_infer = TRTInference(engine)\n    \n    # Run inference\n    trt_output = trt_infer.infer(onnx_input)\n    trt_seg, _ = visualize_segmentation(trt_output)\n    \n    # Benchmark\n    trt_time = benchmark(\n        lambda: trt_infer.infer(onnx_input),\n        'TensorRT (GPU, FP16)'\n    )\nelse:\n    trt_time = None\n    print('Skipping TensorRT benchmark (not available)')\n"""))
+    def build_trt_engine(onnx_path, fp16=True):
+        \"\"\"Build a TensorRT engine from ONNX. Handles TRT 8/9/10 APIs.\"\"\"
+        builder = trt.Builder(TRT_LOGGER)
+
+        # TRT 10 removed the EXPLICIT_BATCH flag (all networks are explicit-batch by default)
+        if TRT_MAJOR >= 10:
+            network = builder.create_network()
+        else:
+            network = builder.create_network(
+                1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
+            )
+
+        parser = trt.OnnxParser(network, TRT_LOGGER)
+        with open(onnx_path, 'rb') as f:
+            if not parser.parse(f.read()):
+                for i in range(parser.num_errors):
+                    print(f'  Parse error [{i}]: {parser.get_error(i)}')
+                return None
+
+        config = builder.create_builder_config()
+        config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 2 << 30)  # 2 GB
+
+        if fp16 and builder.platform_has_fast_fp16:
+            config.set_flag(trt.BuilderFlag.FP16)
+            print('✓ FP16 mode enabled')
+
+        print('Building TensorRT engine (this may take a few minutes)...')
+        serialized = builder.build_serialized_network(network, config)
+        if serialized is None:
+            print('⚠ FP16 build failed, retrying FP32...')
+            config.clear_flag(trt.BuilderFlag.FP16)
+            serialized = builder.build_serialized_network(network, config)
+        if serialized is None:
+            print('✗ Engine build failed.')
+            return None
+
+        runtime = trt.Runtime(TRT_LOGGER)
+        engine  = runtime.deserialize_cuda_engine(serialized)
+        print('✓ Engine built successfully')
+        return engine
+
+    engine = build_trt_engine(ONNX_PATH, fp16=True)
+else:
+    engine = None
+"""))
+
+nb.cells.append(new_code_cell("""if trt_available and engine is not None:
+    class TRTInference:
+        \"\"\"Version-aware TensorRT inference wrapper (TRT 8 / 9 / 10).\"\"\"
+
+        def __init__(self, engine):
+            self.context = engine.create_execution_context()
+            self.trt_major = int(trt.__version__.split('.')[0])
+
+            # Shape API differs between TRT versions
+            if self.trt_major >= 10:
+                in_shape  = tuple(engine.get_tensor_shape('input'))
+                out_shape = tuple(engine.get_tensor_shape('output'))
+            else:
+                in_shape  = tuple(engine.get_binding_shape(0))
+                out_shape = tuple(engine.get_binding_shape(1))
+
+            self.d_input      = cuda.mem_alloc(int(np.prod(in_shape))  * 4)
+            self.d_output     = cuda.mem_alloc(int(np.prod(out_shape)) * 4)
+            self.output_shape = out_shape
+            self.stream       = cuda.Stream()
+
+        def infer(self, input_data):
+            inp = np.ascontiguousarray(input_data, dtype=np.float32)
+            out = np.empty(self.output_shape, dtype=np.float32)
+
+            cuda.memcpy_htod_async(self.d_input, inp, self.stream)
+
+            if self.trt_major >= 10:
+                self.context.set_tensor_address('input',  int(self.d_input))
+                self.context.set_tensor_address('output', int(self.d_output))
+                self.context.execute_async_v3(stream_handle=self.stream.handle)
+            else:
+                bindings = [int(self.d_input), int(self.d_output)]
+                self.context.execute_async_v2(bindings=bindings,
+                                              stream_handle=self.stream.handle)
+
+            cuda.memcpy_dtoh_async(out, self.d_output, self.stream)
+            self.stream.synchronize()
+            return out
+
+    trt_infer = TRTInference(engine)
+
+    # Verify output
+    trt_output = trt_infer.infer(onnx_input)
+    trt_seg, _ = visualize_segmentation(trt_output)
+
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    axes[0].imshow(pytorch_seg); axes[0].set_title('PyTorch'); axes[0].axis('off')
+    axes[1].imshow(trt_seg);     axes[1].set_title('TensorRT FP16'); axes[1].axis('off')
+    plt.suptitle('PyTorch vs TensorRT Output', fontsize=14)
+    plt.tight_layout(); plt.show()
+
+    trt_time = benchmark(lambda: trt_infer.infer(onnx_input), 'TensorRT (GPU, FP16)')
+else:
+    trt_time = None
+    print('Skipping TensorRT (not available on this runtime)')
+"""))
 
 # Section 8: Benchmarking
 nb.cells.append(new_markdown_cell("---\n## 8. Production Profiling & Benchmarking\n\n### Key Metrics\n- **Latency:** Time to process one inference (ms)\n- **Throughput:** Inferences per second (FPS)\n- **Memory:** GPU/CPU memory used during inference\n- **Model size:** Disk space (affects deployment size)"))
@@ -499,9 +611,10 @@ nb.cells.append(new_markdown_cell("---\n## 9. Full Pipeline Project: Train → O
 
 nb.cells.append(new_code_cell("""# Project: Simple object detector (YOLO-style)\nprint('PROJECT: Simple Object Detector')\nprint('Goal: Train → Optimize → Export → Deploy → Benchmark')\nprint('\\nStep 1: TRAIN')\nprint('-' * 60)\n\nclass SimpleDetector(torch_nn.Module):\n    \"\"\"Tiny object detection model (single-scale).\"\"\"\n    def __init__(self):\n        super().__init__()\n        self.backbone = torch_nn.Sequential(\n            torch_nn.Conv2d(3, 16, 3, padding=1),\n            torch_nn.ReLU(),\n            torch_nn.MaxPool2d(2),\n            torch_nn.Conv2d(16, 32, 3, padding=1),\n            torch_nn.ReLU(),\n        )\n        self.head = torch_nn.Conv2d(32, 5, 1)  # [tx, ty, tw, th, conf]\n    \n    def forward(self, x):\n        return self.head(self.backbone(x))\n\ndetector = SimpleDetector()\ndetector.train()\noptimizer = torch.optim.Adam(detector.parameters())\n\nprint(f'Model: SimpleDetector ({sum(p.numel() for p in detector.parameters()):,} params)')\nprint(f'Input: (batch, 3, 416, 416)')\nprint(f'Output: (batch, 5, 104, 104)  # [tx, ty, tw, th, confidence]')\nprint()\n\n# Quick training\nfor epoch in range(3):\n    synthetic_batch = torch.randn(4, 3, 416, 416)\n    targets = torch.randn(4, 5, 104, 104)\n    \n    outputs = detector(synthetic_batch)\n    loss = ((outputs - targets) ** 2).mean()\n    \n    optimizer.zero_grad()\n    loss.backward()\n    optimizer.step()\n    \n    print(f'  Epoch {epoch+1}/3  Loss: {loss.item():.4f}')\n\ndetector.eval()\nprint('✓ Training complete')\n"""))
 
-nb.cells.append(new_code_cell("""print('\\nStep 2: OPTIMIZE')\nprint('-' * 60)\n\n# Pruning\noptimized_detector = copy.deepcopy(detector)\nfor name, module in optimized_detector.named_modules():\n    if isinstance(module, torch_nn.Conv2d):\n        prune.ln_structured(module, 'weight', amount=0.2, n=1, dim=0)\n        prune.remove(module, 'weight')\n\noriginal_params = sum(p.numel() for p in detector.parameters())\noptimized_params = sum(p.numel() for p in optimized_detector.parameters())\n\nprint(f'Pruning: {original_params:,} → {optimized_params:,} params')\nprint(f'Sparsity: {100*(1 - optimized_params/original_params):.1f}%')\nprint('✓ Optimization complete')\n"""))
+nb.cells.append(new_code_cell("""print('\\nStep 2: OPTIMIZE')\nprint('-' * 60)\n\n# Pruning (unstructured L1 - keeps tensor shapes intact)
+optimized_detector = copy.deepcopy(detector)\n\ndet_conv_params = [(m, 'weight') for m in optimized_detector.modules() if isinstance(m, torch_nn.Conv2d)]\nprune.global_unstructured(det_conv_params, pruning_method=prune.L1Unstructured, amount=0.3)\nfor m, name in det_conv_params:\n    prune.remove(m, name)\n\ntotal_w = sum(p.numel() for p in detector.parameters())\nnonzero_w = sum((p != 0).sum().item() for p in optimized_detector.parameters())\nprint(f'Sparsity: {100*(1 - nonzero_w/total_w):.1f}% weights zeroed')\nprint('✓ Optimization complete')\n"""))
 
-nb.cells.append(new_code_cell("""print('\\nStep 3: EXPORT')\nprint('-' * 60)\n\nDETECTOR_ONNX = 'simple_detector.onnx'\n\ndummy_det_input = torch.randn(1, 3, 416, 416)\ntorch.onnx.export(\n    optimized_detector,\n    dummy_det_input,\n    DETECTOR_ONNX,\n    input_names=['image'],\n    output_names=['detections'],\n    opset_version=17\n)\n\nmodel_det = onnx.load(DETECTOR_ONNX)\nonnx.checker.check_model(model_det)\n\ndet_size = os.path.getsize(DETECTOR_ONNX) / 1024\nprint(f'Exported to: {DETECTOR_ONNX}')\nprint(f'File size: {det_size:.1f} KB')\nprint('✓ Export complete')\n"""))
+nb.cells.append(new_code_cell("""print('\\nStep 3: EXPORT')\nprint('-' * 60)\n\nDETECTOR_ONNX = 'simple_detector.onnx'\n\ndummy_det_input = torch.randn(1, 3, 416, 416)\ntorch.onnx.export(\n    optimized_detector,\n    dummy_det_input,\n    DETECTOR_ONNX,\n    input_names=['image'],\n    output_names=['detections'],\n    opset_version=12\n)\n\nmodel_det = onnx.load(DETECTOR_ONNX)\nonnx.checker.check_model(model_det)\n\ndet_size = os.path.getsize(DETECTOR_ONNX) / 1024\nprint(f'Exported to: {DETECTOR_ONNX}')\nprint(f'File size: {det_size:.1f} KB')\nprint('✓ Export complete')\n"""))
 
 nb.cells.append(new_code_cell("""print('\\nStep 4: DEPLOY')\nprint('-' * 60)\n\ndet_session = ort.InferenceSession(DETECTOR_ONNX, providers=['CPUExecutionProvider'])\ndet_input = det_session.get_inputs()[0]\ndet_output = det_session.get_outputs()[0]\n\ntest_det_image = np.random.randn(1, 3, 416, 416).astype(np.float32)\ndet_pred = det_session.run([det_output.name], {det_input.name: test_det_image})[0]\n\nprint(f'Input shape:  {test_det_image.shape}')\nprint(f'Output shape: {det_pred.shape}')\nprint('✓ Deployment complete (ONNX Runtime)')\n"""))
 
