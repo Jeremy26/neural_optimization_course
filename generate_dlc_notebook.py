@@ -213,11 +213,8 @@ torch.onnx.export(
     verbose=False,
     input_names=['input'],
     output_names=['output'],
-    opset_version=12,
-    dynamic_axes={
-        'input': {0: 'batch_size'},
-        'output': {0: 'batch_size'}
-    }
+    opset_version=18,
+    # No dynamic_axes: static batch=1, required for TensorRT compatibility
 )
 
 # Validate
@@ -354,8 +351,7 @@ torch.onnx.export(
     STEERING_ONNX_PATH,
     input_names=['image'],
     output_names=['steering_logits'],
-    opset_version=12,
-    dynamic_axes={'image': {0: 'batch_size'}, 'steering_logits': {0: 'batch_size'}}
+    opset_version=18,
 )
 
 # Validate
@@ -433,7 +429,7 @@ axes[0].imshow(pytorch_seg)
 axes[0].set_title('Original Model', fontsize=14)
 axes[0].axis('off')
 axes[1].imshow(pruned_seg)
-axes[1].set_title('Pruned Model (30% structured)', fontsize=14)
+axes[1].set_title('Pruned Model (40% unstructured L1)', fontsize=14)
 axes[1].axis('off')
 plt.suptitle('Pruning: Original vs Pruned Output', fontsize=14)
 plt.tight_layout()
@@ -444,6 +440,8 @@ match = (pytorch_output.argmax(dim=1) == pruned_output.argmax(dim=1)).float().me
 print(f'Pixel agreement with original: {match*100:.1f}%')\n"""))
 
 nb.cells.append(new_code_cell("""# Export pruned model to ONNX
+# Note: unstructured pruning zeros weights but does NOT reduce ONNX file size —
+# ONNX stores all tensors densely. For real size reduction, use quantization.
 PRUNED_ONNX_PATH = 'deeplabv3_pruned.onnx'
 
 torch.onnx.export(
@@ -452,31 +450,49 @@ torch.onnx.export(
     PRUNED_ONNX_PATH,
     input_names=['input'],
     output_names=['output'],
-    opset_version=12,
-    dynamic_axes={'input': {0: 'batch_size'}, 'output': {0: 'batch_size'}}
+    opset_version=18,
 )
 
-# Simplify and save
 model_pruned_onnx = onnx.load(PRUNED_ONNX_PATH)
 model_pruned_simplified, _ = onnxsim.simplify(model_pruned_onnx)
 onnx.save(model_pruned_simplified, PRUNED_ONNX_PATH)
 
 original_size = os.path.getsize(ONNX_PATH) / 1024 / 1024
-pruned_size = os.path.getsize(PRUNED_ONNX_PATH) / 1024 / 1024
+pruned_size   = os.path.getsize(PRUNED_ONNX_PATH) / 1024 / 1024
+print(f'Original ONNX FP32: {original_size:.1f} MB')
+print(f'Pruned  ONNX FP32:  {pruned_size:.1f} MB  ← same (zeros still stored densely)')
+"""))
 
-print(f'Original ONNX: {original_size:.1f} MB')
-print(f'Pruned ONNX:   {pruned_size:.1f} MB')
-print(f'Size reduction: {(1 - pruned_size/original_size)*100:.1f}%')\n"""))
+nb.cells.append(new_code_cell("""# INT8 dynamic quantization via ONNX Runtime — real ~4x file size reduction
+from onnxruntime.quantization import quantize_dynamic, QuantType
 
-nb.cells.append(new_code_cell("""# Benchmark pruned ONNX model
+QUANT_ONNX_PATH = 'deeplabv3_int8.onnx'
+quantize_dynamic(ONNX_PATH, QUANT_ONNX_PATH, weight_type=QuantType.QInt8)
+
+quant_size = os.path.getsize(QUANT_ONNX_PATH) / 1024 / 1024
+print(f'Original FP32: {original_size:.1f} MB')
+print(f'INT8 quant:    {quant_size:.1f} MB  ({(1 - quant_size/original_size)*100:.0f}% smaller)')
+"""))
+
+nb.cells.append(new_code_cell("""# Benchmark all three ONNX variants
 pruned_session = ort.InferenceSession(PRUNED_ONNX_PATH, providers=['CPUExecutionProvider'])
-pruned_input_meta = pruned_session.get_inputs()[0]
+pruned_input_meta  = pruned_session.get_inputs()[0]
 pruned_output_meta = pruned_session.get_outputs()[0]
+
+quant_session = ort.InferenceSession(QUANT_ONNX_PATH, providers=['CPUExecutionProvider'])
+quant_input_meta  = quant_session.get_inputs()[0]
+quant_output_meta = quant_session.get_outputs()[0]
 
 pruned_onnx_time = benchmark(
     lambda: pruned_session.run([pruned_output_meta.name], {pruned_input_meta.name: onnx_input}),
-    'Pruned ONNX Runtime'
-)\n"""))
+    'ONNX Runtime (pruned FP32)'
+)
+quant_onnx_time = benchmark(
+    lambda: quant_session.run([quant_output_meta.name],  {quant_input_meta.name: onnx_input}),
+    'ONNX Runtime (INT8 quantized)'
+)
+print(f'\\nINT8 speedup vs original ONNX: {onnx_time/quant_onnx_time:.2f}x')
+"""))
 
 # Section 5: Autoware TensorRT Analysis
 nb.cells.append(new_markdown_cell("---\n## 5. Analyze Autoware's TensorRT C++ Production Code\n\n### Overview: How Autoware Deploys Neural Networks\n\n[Autoware](https://github.com/autowarefoundation/autoware) is the world's leading open-source autonomous driving stack. Its perception nodes use TensorRT for GPU inference.\n\n**Autoware's Deployment Stack:**\n```\nPython (Training)     →  PyTorch Model\n    ↓\nExport              →  ONNX File\n    ↓\nC++ Perception Node →  TensorRT Engine\n    ↓\nROS2 Message Bus    →  Steering/Speed commands\n```\n\n### The TrtCommon Class Pattern\n\nAutoware uses a `TrtCommon` utility class to manage TensorRT engines. Here's the real C++ interface:"))
@@ -521,6 +537,15 @@ nb.cells.append(new_code_cell("""if trt_available:
         if fp16 and builder.platform_has_fast_fp16:
             config.set_flag(trt.BuilderFlag.FP16)
             print('✓ FP16 mode enabled')
+
+        # Optimization profile: required when the ONNX has dynamic dims (-1).
+        # We exported with static shapes, but add a profile defensively.
+        if network.num_inputs > 0:
+            inp = network.get_input(0)
+            shape = tuple(d if d > 0 else 1 for d in inp.shape)
+            profile = builder.create_optimization_profile()
+            profile.set_shape(inp.name, shape, shape, shape)
+            config.add_optimization_profile(profile)
 
         print('Building TensorRT engine (this may take a few minutes)...')
         serialized = builder.build_serialized_network(network, config)
@@ -604,17 +629,94 @@ else:
 nb.cells.append(new_markdown_cell("---\n## 8. Production Profiling & Benchmarking\n\n### Key Metrics\n- **Latency:** Time to process one inference (ms)\n- **Throughput:** Inferences per second (FPS)\n- **Memory:** GPU/CPU memory used during inference\n- **Model size:** Disk space (affects deployment size)"))
 
 nb.cells.append(new_code_cell("""# Summary of all benchmarks
-print('\\n' + '='*70)\nprint('  DEPLOYMENT BENCHMARK RESULTS')\nprint('  Model: DeepLabV3-MobileNetV3-Large')\nprint('='*70)\nprint(f'\\n  {\"Framework\":<35} {\"Latency (ms)\":<15} {\"FPS\":<10}')\nprint(f'  {\"-\"*35} {\"-\"*15} {\"-\"*10}')\nprint(f'  {\"PyTorch (CPU, baseline)\":<35} {pytorch_time:<15.1f} {1000/pytorch_time:<10.1f}')\nprint(f'  {\"ONNX Runtime (CPU)\":<35} {onnx_time:<15.1f} {1000/onnx_time:<10.1f}')\nprint(f'  {\"ONNX Runtime (CPU, pruned 30%)\":<35} {pruned_onnx_time:<15.1f} {1000/pruned_onnx_time:<10.1f}')\nif trt_time:\n    print(f'  {\"TensorRT (GPU, FP16)\":<35} {trt_time:<15.1f} {1000/trt_time:<10.1f}')\nprint(f'\\n  Model Sizes:')\nprint(f'  Original (FP32):     {original_size:.1f} MB')\nprint(f'  Pruned (FP32):       {pruned_size:.1f} MB')\nprint('='*70)\n"""))
+print('\\n' + '='*70)
+print('  DEPLOYMENT BENCHMARK RESULTS')
+print('  Model: DeepLabV3-MobileNetV3-Large')
+print('='*70)
+print(f'  {\"Framework\":<38} {\"ms\":<10} {\"FPS\":<10} {\"Speedup\":<8}')
+print(f'  {\"-\"*38} {\"-\"*10} {\"-\"*10} {\"-\"*8}')
+
+rows = [
+    ('PyTorch CPU (baseline)',   pytorch_time),
+    ('ONNX Runtime CPU',         onnx_time),
+    ('ONNX Runtime CPU (pruned)', pruned_onnx_time),
+    ('ONNX Runtime CPU (INT8)',  quant_onnx_time),
+]
+if trt_time:
+    rows.append(('TensorRT GPU FP16', trt_time))
+
+for name, t in rows:
+    print(f'  {name:<38} {t:<10.1f} {1000/t:<10.1f} {pytorch_time/t:<8.2f}x')
+
+print()
+print(f'  Model sizes:')
+print(f'    FP32 ONNX:  {original_size:.1f} MB')
+print(f'    INT8 ONNX:  {quant_size:.1f} MB  ({(1-quant_size/original_size)*100:.0f}% smaller)')
+print('='*70)
+"""))
 
 # Section 9: Full Pipeline
 nb.cells.append(new_markdown_cell("---\n## 9. Full Pipeline Project: Train → Optimize → Export → Deploy → Benchmark\n\n### End-to-End Autonomous Vehicle Perception\n\nThis section demonstrates the **complete production workflow**:\n\n```\n1. TRAIN      → Define and train a PyTorch model\n2. OPTIMIZE   → Prune and quantize\n3. EXPORT     → Convert to ONNX\n4. DEPLOY     → Load with ONNX Runtime / TensorRT\n5. BENCHMARK  → Compare all frameworks\n```"))
 
-nb.cells.append(new_code_cell("""# Project: Simple object detector (YOLO-style)\nprint('PROJECT: Simple Object Detector')\nprint('Goal: Train → Optimize → Export → Deploy → Benchmark')\nprint('\\nStep 1: TRAIN')\nprint('-' * 60)\n\nclass SimpleDetector(torch_nn.Module):\n    \"\"\"Tiny object detection model (single-scale).\"\"\"\n    def __init__(self):\n        super().__init__()\n        self.backbone = torch_nn.Sequential(\n            torch_nn.Conv2d(3, 16, 3, padding=1),\n            torch_nn.ReLU(),\n            torch_nn.MaxPool2d(2),\n            torch_nn.Conv2d(16, 32, 3, padding=1),\n            torch_nn.ReLU(),\n        )\n        self.head = torch_nn.Conv2d(32, 5, 1)  # [tx, ty, tw, th, conf]\n    \n    def forward(self, x):\n        return self.head(self.backbone(x))\n\ndetector = SimpleDetector()\ndetector.train()\noptimizer = torch.optim.Adam(detector.parameters())\n\nprint(f'Model: SimpleDetector ({sum(p.numel() for p in detector.parameters()):,} params)')\nprint(f'Input: (batch, 3, 416, 416)')\nprint(f'Output: (batch, 5, 104, 104)  # [tx, ty, tw, th, confidence]')\nprint()\n\n# Quick training\nfor epoch in range(3):\n    synthetic_batch = torch.randn(4, 3, 416, 416)\n    targets = torch.randn(4, 5, 104, 104)\n    \n    outputs = detector(synthetic_batch)\n    loss = ((outputs - targets) ** 2).mean()\n    \n    optimizer.zero_grad()\n    loss.backward()\n    optimizer.step()\n    \n    print(f'  Epoch {epoch+1}/3  Loss: {loss.item():.4f}')\n\ndetector.eval()\nprint('✓ Training complete')\n"""))
+nb.cells.append(new_code_cell("""# Project: Simple object detector (YOLO-style)
+print('PROJECT: Simple Object Detector')
+print('Goal: Train → Optimize → Export → Deploy → Benchmark')
+print('\\nStep 1: TRAIN')
+print('-' * 60)
+
+class SimpleDetector(torch_nn.Module):
+    \"\"\"Tiny object detection model.\"\"\"
+    def __init__(self):
+        super().__init__()
+        self.backbone = torch_nn.Sequential(
+            torch_nn.Conv2d(3, 16, 3, padding=1),
+            torch_nn.ReLU(),
+            torch_nn.MaxPool2d(2),   # 416→208
+            torch_nn.Conv2d(16, 32, 3, padding=1),
+            torch_nn.ReLU(),
+            torch_nn.MaxPool2d(2),   # 208→104
+        )
+        self.head = torch_nn.Conv2d(32, 5, 1)  # [tx, ty, tw, th, conf] at 104x104
+
+    def forward(self, x):
+        return self.head(self.backbone(x))
+
+detector = SimpleDetector()
+detector.train()
+optimizer = torch.optim.Adam(detector.parameters())
+
+# Compute actual output shape before creating targets
+with torch.no_grad():
+    _sample = detector(torch.zeros(1, 3, 416, 416))
+    _out_shape = _sample.shape[1:]  # (5, H, W)
+
+print(f'Model: SimpleDetector ({sum(p.numel() for p in detector.parameters()):,} params)')
+print(f'Input: (batch, 3, 416, 416)')
+print(f'Output: (batch, {_out_shape[0]}, {_out_shape[1]}, {_out_shape[2]})  # predictions per cell')
+print()
+
+detector.train()
+for epoch in range(3):
+    synthetic_batch = torch.randn(4, 3, 416, 416)
+    targets = torch.randn(4, *_out_shape)   # match real output shape
+
+    outputs = detector(synthetic_batch)
+    loss = ((outputs - targets) ** 2).mean()
+
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+
+    print(f'  Epoch {epoch+1}/3  Loss: {loss.item():.4f}')
+
+detector.eval()
+print('✓ Training complete')
+"""))
 
 nb.cells.append(new_code_cell("""print('\\nStep 2: OPTIMIZE')\nprint('-' * 60)\n\n# Pruning (unstructured L1 - keeps tensor shapes intact)
 optimized_detector = copy.deepcopy(detector)\n\ndet_conv_params = [(m, 'weight') for m in optimized_detector.modules() if isinstance(m, torch_nn.Conv2d)]\nprune.global_unstructured(det_conv_params, pruning_method=prune.L1Unstructured, amount=0.3)\nfor m, name in det_conv_params:\n    prune.remove(m, name)\n\ntotal_w = sum(p.numel() for p in detector.parameters())\nnonzero_w = sum((p != 0).sum().item() for p in optimized_detector.parameters())\nprint(f'Sparsity: {100*(1 - nonzero_w/total_w):.1f}% weights zeroed')\nprint('✓ Optimization complete')\n"""))
 
-nb.cells.append(new_code_cell("""print('\\nStep 3: EXPORT')\nprint('-' * 60)\n\nDETECTOR_ONNX = 'simple_detector.onnx'\n\ndummy_det_input = torch.randn(1, 3, 416, 416)\ntorch.onnx.export(\n    optimized_detector,\n    dummy_det_input,\n    DETECTOR_ONNX,\n    input_names=['image'],\n    output_names=['detections'],\n    opset_version=12\n)\n\nmodel_det = onnx.load(DETECTOR_ONNX)\nonnx.checker.check_model(model_det)\n\ndet_size = os.path.getsize(DETECTOR_ONNX) / 1024\nprint(f'Exported to: {DETECTOR_ONNX}')\nprint(f'File size: {det_size:.1f} KB')\nprint('✓ Export complete')\n"""))
+nb.cells.append(new_code_cell("""print('\\nStep 3: EXPORT')\nprint('-' * 60)\n\nDETECTOR_ONNX = 'simple_detector.onnx'\n\ndummy_det_input = torch.randn(1, 3, 416, 416)\ntorch.onnx.export(\n    optimized_detector,\n    dummy_det_input,\n    DETECTOR_ONNX,\n    input_names=['image'],\n    output_names=['detections'],\n    opset_version=18\n)\n\nmodel_det = onnx.load(DETECTOR_ONNX)\nonnx.checker.check_model(model_det)\n\ndet_size = os.path.getsize(DETECTOR_ONNX) / 1024\nprint(f'Exported to: {DETECTOR_ONNX}')\nprint(f'File size: {det_size:.1f} KB')\nprint('✓ Export complete')\n"""))
 
 nb.cells.append(new_code_cell("""print('\\nStep 4: DEPLOY')\nprint('-' * 60)\n\ndet_session = ort.InferenceSession(DETECTOR_ONNX, providers=['CPUExecutionProvider'])\ndet_input = det_session.get_inputs()[0]\ndet_output = det_session.get_outputs()[0]\n\ntest_det_image = np.random.randn(1, 3, 416, 416).astype(np.float32)\ndet_pred = det_session.run([det_output.name], {det_input.name: test_det_image})[0]\n\nprint(f'Input shape:  {test_det_image.shape}')\nprint(f'Output shape: {det_pred.shape}')\nprint('✓ Deployment complete (ONNX Runtime)')\n"""))
 
