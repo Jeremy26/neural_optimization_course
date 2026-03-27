@@ -108,7 +108,24 @@ model = torch.jit.load('/content/models/SceneSeg_traced.pt', map_location='cpu')
 model.eval()
 print("✓ SceneSeg traced model loaded")
 
-H, W = 256, 512   # SceneSeg standard input size
+H, W = 256, 512   # will be overridden below by auto-probe
+
+# Probe the exact input size the model was traced with.
+# Traced (TorchScript) models bake in tensor shapes — we must use the
+# exact same H×W that was used during torch.jit.trace().
+CANDIDATE_SIZES = [(256, 512), (320, 576), (320, 640), (384, 640), (480, 640), (512, 512)]
+
+with torch.no_grad():
+    for h, w in CANDIDATE_SIZES:
+        try:
+            model(torch.zeros(1, 3, h, w))
+            H, W = h, w
+            print(f'✓ Working input size found: H={H}  W={W}')
+            break
+        except Exception as e:
+            print(f'  ({h:3d},{w:3d}) — {str(e)[:70]}')
+    else:
+        raise RuntimeError('No candidate size worked. Add more sizes to CANDIDATE_SIZES.')
 
 preprocess = T.Compose([
     T.Resize((H, W)),
