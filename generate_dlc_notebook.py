@@ -229,9 +229,16 @@ def benchmark(run_fn, name, n_warmup=5, n_runs=50, use_cuda=False):
     return t
 
 # ── Test 1: PyTorch CPU ───────────────────────────────────────────────────────
-# Fewer runs on CPU — this is just a baseline, not where we optimise
-pytorch_cpu_times = benchmark(lambda: model(input_tensor), 'Test 1 · PyTorch CPU',
-                               n_warmup=3, n_runs=20)"""))
+# SceneSeg is a GPU model — CPU is slow by design. We time a single pass
+# just to establish a baseline; no point waiting 5+ minutes for statistics.
+with torch.no_grad():
+    model(input_tensor)   # one warmup
+    t0 = time.perf_counter()
+    model(input_tensor)
+    cpu_ms = (time.perf_counter() - t0) * 1000
+
+pytorch_cpu_times = np.array([cpu_ms])   # single-element array keeps downstream plots working
+print(f'Test 1 · PyTorch CPU{"."*37} {cpu_ms:.1f} ms  ({1000/cpu_ms:.1f} FPS)  [single run — CPU is reference only]')"""))
 
 nb.cells.append(new_code_cell("""\
 # ── Test 2: PyTorch GPU ──────────────────────────────────────────────────────
