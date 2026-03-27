@@ -61,19 +61,16 @@ else:
 # Section 1: Load PyTorch Model
 nb.cells.append(new_markdown_cell("---\n## 1. Load a Robotics Perception Model, Visualize & Benchmark\n\n### Context: Autonomous Driving Perception\nPerception is the first step in autonomous systems. Deep learning models predict:\n- **Semantic segmentation** → \"What is each pixel?\"\n- **Object detection** → \"Where are the cars/pedestrians?\"\n- **Depth estimation** → \"How far is that object?\"\n\nWe'll use **DeepLabV3-MobileNetV3-Large**: a real segmentation model used in mobile/edge AV systems.\n\n**Real Autoware example:** [Autoware's EgoLanes model](https://github.com/autowarefoundation/autoware/tree/main/perception/perception_lanelet2_map_based) predicts lane lines for autonomous driving."))
 
-nb.cells.append(new_code_cell("""# Load pretrained DeepLabV3 with MobileNetV3 backbone
-# Used in real autonomous driving systems for road/obstacle/sky segmentation
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-print(f'Device: {device}')
-
+nb.cells.append(new_code_cell("""# Load pretrained DeepLabV3 with MobileNetV3 backbone (kept on CPU for ONNX export)
 model = torchvision.models.segmentation.deeplabv3_mobilenet_v3_large(pretrained=True)
-model.eval().to(device)
+model.eval()
 
 total_params = sum(p.numel() for p in model.parameters())
 print(f'Model: DeepLabV3-MobileNetV3-Large')
 print(f'Total parameters: {total_params:,}')
 print(f'Model size: ~{total_params * 4 / 1024 / 1024:.1f} MB (FP32)')
-print(f'Backbone: MobileNetV3-Large (lightweight, suitable for mobile/edge)')"""))
+if torch.cuda.is_available():
+    print(f'GPU available: {torch.cuda.get_device_name(0)}  — GPU tests will run in later cells')"""))
 
 nb.cells.append(new_code_cell("""# Download a real urban driving scene (bus + pedestrians — perfect for AV segmentation)
 # This is the standard YOLO / ultralytics test image used across AV benchmarks
@@ -101,8 +98,8 @@ preprocess = T.Compose([
     T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
 
-input_tensor = preprocess(original_image).unsqueeze(0).to(device)
-print(f'Input tensor shape: {input_tensor.shape}  device={input_tensor.device}')
+input_tensor = preprocess(original_image).unsqueeze(0)   # stays on CPU
+print(f'Input tensor shape: {input_tensor.shape}')
 
 # Cityscapes color palette
 CITYSCAPES_COLORS = np.array([
@@ -145,13 +142,11 @@ def visualize_segmentation(prediction, title='Segmentation'):
 
 print('✓ Preprocessing ready')\n"""))
 
-nb.cells.append(new_code_cell("""# Run PyTorch inference (baseline)
+nb.cells.append(new_code_cell("""# Visualize: run CPU inference once to get the segmentation map
 with torch.no_grad():
-    pytorch_output = model(input_tensor)['out']
+    pytorch_output = model(input_tensor)['out']   # CPU tensor
 
-# Move to CPU for visualization / numpy ops
-pytorch_output_cpu = pytorch_output.cpu()
-pytorch_seg, pytorch_classes = visualize_segmentation(pytorch_output_cpu)
+pytorch_seg, pytorch_classes = visualize_segmentation(pytorch_output)
 
 fig, axes = plt.subplots(1, 2, figsize=(16, 6))
 axes[0].imshow(T.CenterCrop(480)(T.Resize(520)(original_image)))
@@ -162,39 +157,47 @@ axes[1].set_title('Semantic Segmentation Output', fontsize=14)
 axes[1].axis('off')
 plt.tight_layout()
 plt.show()
+print(f'Classes detected: {len(np.unique(pytorch_classes))}')\n"""))
 
-unique_classes = np.unique(pytorch_classes)
-print(f'Classes detected: {len(unique_classes)}')
-print(f'Output shape: {pytorch_output.shape}')
-print(f'Device: {pytorch_output.device}')\n"""))
-
-nb.cells.append(new_code_cell("""# Benchmark function — GPU-aware (syncs CUDA before stopping the clock)
-_use_cuda = torch.cuda.is_available()
-
-def benchmark(run_fn, name, n_warmup=10, n_runs=50):
+nb.cells.append(new_code_cell("""# Benchmark helper — syncs CUDA so GPU timing is accurate
+def benchmark(run_fn, name, n_warmup=10, n_runs=50, use_cuda=False):
     for _ in range(n_warmup):
         run_fn()
-    if _use_cuda:
+    if use_cuda:
         torch.cuda.synchronize()
 
     times = []
     for _ in range(n_runs):
         start = time.perf_counter()
         run_fn()
-        if _use_cuda:
-            torch.cuda.synchronize()   # wait for GPU kernel to finish
+        if use_cuda:
+            torch.cuda.synchronize()
         times.append((time.perf_counter() - start) * 1000)
 
     avg, std = np.mean(times), np.std(times)
-    fps = 1000 / avg
-    print(f'{name:.<45} {avg:.1f} ms ± {std:.1f} ms  ({fps:.1f} FPS)')
+    print(f'{name:.<50} {avg:6.1f} ms ± {std:.1f} ms  ({1000/avg:.1f} FPS)')
     return avg
 
-hw = f'GPU ({torch.cuda.get_device_name(0)})' if _use_cuda else 'CPU'
-pytorch_time = benchmark(
-    lambda: model(input_tensor),
-    f'PyTorch ({hw})'
-)"""))
+# ── Test 1: PyTorch CPU ──────────────────────────────────────────────────────
+pytorch_cpu_time = benchmark(lambda: model(input_tensor), 'Test 1 · PyTorch CPU')
+"""))
+
+nb.cells.append(new_code_cell("""# ── Test 2: PyTorch GPU ─────────────────────────────────────────────────────
+if not torch.cuda.is_available():
+    print('⚠ No GPU — skipping Test 2')
+    pytorch_gpu_time = None
+else:
+    model_gpu     = model.cuda()
+    input_gpu     = input_tensor.cuda()
+
+    pytorch_gpu_time = benchmark(
+        lambda: model_gpu(input_gpu),
+        f'Test 2 · PyTorch GPU ({torch.cuda.get_device_name(0)})',
+        use_cuda=True,
+    )
+    if pytorch_cpu_time and pytorch_gpu_time:
+        print(f'GPU speedup over CPU: {pytorch_cpu_time/pytorch_gpu_time:.1f}x')
+"""))
 
 # Section 2: ONNX Export
 nb.cells.append(new_markdown_cell("---\n## 2. Export to ONNX → Validate → Load with ONNX Runtime → Compare FPS\n\n### Why ONNX?\n- **Framework-agnostic** → Train in PyTorch, deploy anywhere\n- **Optimized runtimes** → ONNX Runtime, TensorRT, OpenVINO all optimize ONNX\n- **Model zoo** → Download pre-converted models\n\n**Autoware example:** Most Autoware perception models are exported to ONNX for deployment across different hardware."))
@@ -274,48 +277,53 @@ nb.cells.append(new_code_cell("""import onnxruntime as ort
 print(f'ONNX Runtime version: {ort.__version__}')
 print(f'Available providers: {ort.get_available_providers()}')
 
-# Create inference session - selects best provider automatically
-providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-session = ort.InferenceSession(ONNX_PATH, providers=providers)
-
+# Test 3: ONNX Runtime GPU — must use CUDAExecutionProvider
+# ORT takes CPU numpy as input; the CUDA provider handles H2D transfer internally.
+session = ort.InferenceSession(
+    ONNX_PATH,
+    providers=['CUDAExecutionProvider', 'CPUExecutionProvider']
+)
 active_provider = session.get_providers()[0]
-print(f'\\nActive provider: {active_provider}')
+print(f'Active ORT provider: {active_provider}')
+if active_provider != 'CUDAExecutionProvider':
+    print('⚠ CUDA provider unavailable — make sure onnxruntime-gpu is installed and GPU runtime is selected')
 
-# Get input/output metadata
-input_meta = session.get_inputs()[0]
+input_meta  = session.get_inputs()[0]
 output_meta = session.get_outputs()[0]
 print(f'Input:  {input_meta.name} {input_meta.shape}')
 print(f'Output: {output_meta.name} {output_meta.shape}')\n"""))
 
-nb.cells.append(new_code_cell("""# Run ONNX Runtime inference
-# ORT always takes numpy on CPU — move off GPU first
-onnx_input = input_tensor.cpu().numpy()
+nb.cells.append(new_code_cell("""# Validate ORT output vs PyTorch
+# ORT always takes a CPU numpy array — the CUDA provider handles the GPU transfer
+onnx_input = input_tensor.numpy()   # input_tensor is already on CPU
 onnx_output = session.run([output_meta.name], {input_meta.name: onnx_input})[0]
 
 onnx_seg, _ = visualize_segmentation(onnx_output)
 
 fig, axes = plt.subplots(1, 2, figsize=(16, 6))
 axes[0].imshow(pytorch_seg)
-axes[0].set_title('PyTorch Output', fontsize=14)
+axes[0].set_title('PyTorch CPU output', fontsize=14)
 axes[0].axis('off')
 axes[1].imshow(onnx_seg)
-axes[1].set_title(f'ONNX Runtime Output ({session.get_providers()[0]})', fontsize=14)
+axes[1].set_title(f'ONNX Runtime ({active_provider})', fontsize=14)
 axes[1].axis('off')
-plt.suptitle('Output Comparison: PyTorch vs ONNX Runtime', fontsize=14)
+plt.suptitle('Numerical equivalence check', fontsize=14)
 plt.tight_layout()
 plt.show()
 
-pytorch_np = pytorch_output_cpu.numpy()
-max_diff = np.max(np.abs(pytorch_np - onnx_output))
-print(f'Max numerical difference: {max_diff:.6f}')
-print(f'Outputs match: ✓' if max_diff < 0.001 else 'Outputs differ ⚠')
-print(f'ORT provider: {session.get_providers()[0]}')\n"""))
+max_diff = np.max(np.abs(pytorch_output.numpy() - onnx_output))
+print(f'Max numerical difference: {max_diff:.6f}  (< 0.001 = ✓)')
+\n"""))
 
-nb.cells.append(new_code_cell("""# Benchmark ONNX Runtime
-onnx_time = benchmark(
+nb.cells.append(new_code_cell("""# ── Test 3: ONNX Runtime GPU ────────────────────────────────────────────────
+onnx_gpu_time = benchmark(
     lambda: session.run([output_meta.name], {input_meta.name: onnx_input}),
-    f'ONNX Runtime ({active_provider})'
-)\n"""))
+    f'Test 3 · ONNX Runtime GPU ({active_provider})',
+    use_cuda=(active_provider == 'CUDAExecutionProvider'),
+)
+if pytorch_gpu_time:
+    print(f'ORT GPU vs PyTorch GPU: {pytorch_gpu_time/onnx_gpu_time:.2f}x')
+\n"""))
 
 # Section 3: PyTorch ↔ ONNX Workflow
 nb.cells.append(new_markdown_cell("---\n## 3. The PyTorch ↔ ONNX Workflow\n\n### The Training/Deployment Split\n```\nDevelopment (Research)           Production (Deployment)\n├─ PyTorch (flexible)            ├─ ONNX (optimized)\n├─ Easy debugging                ├─ Framework-agnostic\n├─ Rich ecosystem                ├─ Multiple runtimes\n└─ Custom training loops         └─ Fast inference\n\nWorkflow:\n  Train in PyTorch → Export to ONNX → Deploy with ORT/TensorRT/OpenVINO\n```\n\n### Real Autoware Example\nIn Autoware's perception pipeline:\n- **Development:** Models trained in PyTorch (like EgoLanes, AutoSteer)\n- **Export:** `torch.onnx.export()` to create ONNX files\n- **Deployment:** C++ nodes load ONNX, run inference with TensorRT/ORT\n\nLet's walk through a complete example with a **steering prediction model** (similar to Autoware's AutoSteer)."))
@@ -473,7 +481,7 @@ plt.tight_layout()
 plt.show()
 
 # Measure accuracy difference
-match = (pytorch_output_cpu.argmax(dim=1) == pruned_output.argmax(dim=1)).float().mean().item()
+match = (pytorch_output.argmax(dim=1) == pruned_output.argmax(dim=1)).float().mean().item()
 print(f'Pixel agreement with original: {match*100:.1f}%')\n"""))
 
 nb.cells.append(new_code_cell("""# Export pruned model to ONNX
@@ -528,7 +536,7 @@ quant_onnx_time = benchmark(
     lambda: quant_session.run([quant_output_meta.name],  {quant_input_meta.name: onnx_input}),
     'ONNX Runtime (INT8 quantized)'
 )
-print(f'\\nINT8 speedup vs original ONNX: {onnx_time/quant_onnx_time:.2f}x')
+print(f'\\nINT8 speedup vs original ONNX: {onnx_gpu_time/quant_onnx_time:.2f}x')
 """))
 
 # Section 5: Autoware TensorRT Analysis
@@ -656,7 +664,7 @@ nb.cells.append(new_code_cell("""if trt_available and engine is not None:
     plt.suptitle('PyTorch vs TensorRT Output', fontsize=14)
     plt.tight_layout(); plt.show()
 
-    trt_time = benchmark(lambda: trt_infer.infer(onnx_input), 'TensorRT (GPU, FP16)')
+    trt_time = benchmark(lambda: trt_infer.infer(onnx_input), 'Test 4 · TensorRT GPU (FP16)')
 else:
     trt_time = None
     print('Skipping TensorRT (not available on this runtime)')
@@ -665,25 +673,26 @@ else:
 # Section 8: Benchmarking
 nb.cells.append(new_markdown_cell("---\n## 8. Production Profiling & Benchmarking\n\n### Key Metrics\n- **Latency:** Time to process one inference (ms)\n- **Throughput:** Inferences per second (FPS)\n- **Memory:** GPU/CPU memory used during inference\n- **Model size:** Disk space (affects deployment size)"))
 
-nb.cells.append(new_code_cell("""# Summary of all benchmarks
+nb.cells.append(new_code_cell("""# Summary: 4-test benchmark — CPU baseline + GPU comparison
 print('\\n' + '='*70)
 print('  DEPLOYMENT BENCHMARK RESULTS')
 print('  Model: DeepLabV3-MobileNetV3-Large')
 print('='*70)
-print(f'  {\"Framework\":<38} {\"ms\":<10} {\"FPS\":<10} {\"Speedup\":<8}')
-print(f'  {\"-\"*38} {\"-\"*10} {\"-\"*10} {\"-\"*8}')
+print(f'  {\"Test\":<42} {\"ms\":<10} {\"FPS\":<10} {\"vs CPU\":<8}')
+print(f'  {\"-\"*42} {\"-\"*10} {\"-\"*10} {\"-\"*8}')
 
 rows = [
-    ('PyTorch CPU (baseline)',   pytorch_time),
-    ('ONNX Runtime CPU',         onnx_time),
-    ('ONNX Runtime CPU (pruned)', pruned_onnx_time),
-    ('ONNX Runtime CPU (INT8)',  quant_onnx_time),
+    ('Test 1 · PyTorch CPU (baseline)', pytorch_cpu_time),
 ]
+if pytorch_gpu_time:
+    rows.append(('Test 2 · PyTorch GPU', pytorch_gpu_time))
+if onnx_gpu_time:
+    rows.append(('Test 3 · ONNX Runtime GPU', onnx_gpu_time))
 if trt_time:
-    rows.append(('TensorRT GPU FP16', trt_time))
+    rows.append(('Test 4 · TensorRT GPU (FP16)', trt_time))
 
 for name, t in rows:
-    print(f'  {name:<38} {t:<10.1f} {1000/t:<10.1f} {pytorch_time/t:<8.2f}x')
+    print(f'  {name:<42} {t:<10.1f} {1000/t:<10.1f} {pytorch_cpu_time/t:<8.2f}x')
 
 print()
 print(f'  Model sizes:')
