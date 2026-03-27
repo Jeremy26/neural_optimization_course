@@ -208,25 +208,30 @@ plt.tight_layout(); plt.show()"""))
 
 nb.cells.append(new_code_cell("""\
 # Benchmark helper — returns the full time distribution for rich plots later
-def benchmark(run_fn, name, n_warmup=10, n_runs=100, use_cuda=False):
-    for _ in range(n_warmup):
-        run_fn()
+# n_runs is intentionally lower for CPU (20) vs GPU (100) — CPU passes are slow
+def benchmark(run_fn, name, n_warmup=5, n_runs=50, use_cuda=False):
+    with torch.no_grad():
+        for _ in range(n_warmup):
+            run_fn()
     if use_cuda:
         torch.cuda.synchronize()
     times = []
-    for _ in range(n_runs):
-        t0 = time.perf_counter()
-        run_fn()
-        if use_cuda:
-            torch.cuda.synchronize()
-        times.append((time.perf_counter() - t0) * 1000)
+    with torch.no_grad():
+        for _ in range(n_runs):
+            t0 = time.perf_counter()
+            run_fn()
+            if use_cuda:
+                torch.cuda.synchronize()
+            times.append((time.perf_counter() - t0) * 1000)
     t = np.array(times)
     p50, p95 = np.percentile(t, 50), np.percentile(t, 95)
     print(f'{name:.<58} avg={t.mean():6.1f}ms  p50={p50:5.1f}ms  p95={p95:5.1f}ms  ({1000/t.mean():.0f} FPS)')
     return t
 
 # ── Test 1: PyTorch CPU ───────────────────────────────────────────────────────
-pytorch_cpu_times = benchmark(lambda: model(input_tensor), 'Test 1 · PyTorch CPU')"""))
+# Fewer runs on CPU — this is just a baseline, not where we optimise
+pytorch_cpu_times = benchmark(lambda: model(input_tensor), 'Test 1 · PyTorch CPU',
+                               n_warmup=3, n_runs=20)"""))
 
 nb.cells.append(new_code_cell("""\
 # ── Test 2: PyTorch GPU ──────────────────────────────────────────────────────
