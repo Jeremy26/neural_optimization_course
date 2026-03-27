@@ -205,7 +205,7 @@ class SegmentationWrapper(torch_nn.Module):
 wrapped_model = SegmentationWrapper(model)
 wrapped_model.eval()
 
-print('Exporting to ONNX...')
+print('Exporting to ONNX (opset 18, for ONNX Runtime)...')
 torch.onnx.export(
     wrapped_model,
     input_tensor,
@@ -214,7 +214,6 @@ torch.onnx.export(
     input_names=['input'],
     output_names=['output'],
     opset_version=18,
-    # No dynamic_axes: static batch=1, required for TensorRT compatibility
 )
 
 # Validate
@@ -230,7 +229,34 @@ if ok:
     print('✓ ONNX model simplified')
 
 size_mb = os.path.getsize(ONNX_PATH) / 1024 / 1024
-print(f'\\nONNX model saved: {ONNX_PATH} ({size_mb:.1f} MB)')\n"""))
+print(f'\\nONNX model saved: {ONNX_PATH} ({size_mb:.1f} MB)')
+
+# ── TRT-specific export ──────────────────────────────────────────────────────
+# TensorRT 8.x only supports ONNX opset ≤17 and chokes on ops emitted by
+# PyTorch's new dynamo exporter. We export a second file with the legacy
+# TorchScript exporter (dynamo=False) at opset 17 specifically for TRT.
+ONNX_TRT_PATH = 'deeplabv3_for_trt.onnx'
+print('\\nExporting TRT-compatible ONNX (opset 17, legacy exporter)...')
+try:
+    torch.onnx.export(
+        wrapped_model, input_tensor, ONNX_TRT_PATH,
+        input_names=['input'], output_names=['output'],
+        opset_version=17, dynamo=False,
+    )
+except TypeError:
+    # PyTorch < 2.1 — legacy exporter is already the default
+    torch.onnx.export(
+        wrapped_model, input_tensor, ONNX_TRT_PATH,
+        input_names=['input'], output_names=['output'],
+        opset_version=17,
+    )
+trt_onnx = onnx.load(ONNX_TRT_PATH)
+onnx.checker.check_model(trt_onnx)
+trt_onnx_simplified, ok = onnxsim.simplify(trt_onnx)
+if ok:
+    onnx.save(trt_onnx_simplified, ONNX_TRT_PATH)
+print(f'✓ TRT ONNX saved: {ONNX_TRT_PATH}')
+"""))
 
 nb.cells.append(new_code_cell("""import onnxruntime as ort
 
@@ -562,7 +588,7 @@ nb.cells.append(new_code_cell("""if trt_available:
         print('✓ Engine built successfully')
         return engine
 
-    engine = build_trt_engine(ONNX_PATH, fp16=True)
+    engine = build_trt_engine(ONNX_TRT_PATH, fp16=True)  # opset-17 file
 else:
     engine = None
 """))
