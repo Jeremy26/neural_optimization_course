@@ -75,16 +75,26 @@ SceneSeg segments every pixel into 3 classes:
 - 🟢 Drivable road"""))
 
 nb.cells.append(new_code_cell("""\
-# First, read the input size from the ONNX file
-# (the traced model was frozen at the same dimensions)
-onnx_files = sorted(glob.glob('/content/models/*.onnx'))
-ONNX_PATH  = next(f for f in onnx_files if 'FP32' in f)
+# Inspect all downloaded ONNX files — pick the one with 3 output classes (= SceneSeg)
+print(f"{'File':<40} {'Input shape':<22} {'Output shape'}")
+print('-' * 80)
+for f in sorted(glob.glob('/content/models/*.onnx')):
+    s = ort.InferenceSession(f, providers=['CPUExecutionProvider'])
+    i = s.get_inputs()[0]; o = s.get_outputs()[0]
+    print(f"{Path(f).name:<40} {str(i.shape):<22} {o.shape}")
+
+# SceneSeg has 3 output classes (background / foreground / road)
+ONNX_PATH = next(
+    f for f in sorted(glob.glob('/content/models/*.onnx'))
+    if ort.InferenceSession(f, providers=['CPUExecutionProvider']).get_outputs()[0].shape[1] == 3
+)
+print(f"\\nSelected: {Path(ONNX_PATH).name}")
 
 _sess = ort.InferenceSession(ONNX_PATH, providers=['CPUExecutionProvider'])
 _inp  = _sess.get_inputs()[0]
 H = int(_inp.shape[2]) if _inp.shape[2] else 256
 W = int(_inp.shape[3]) if _inp.shape[3] else 512
-print(f"SceneSeg input size: {H} × {W}")"""))
+print(f"Input size: {H} × {W}")"""))
 
 nb.cells.append(new_code_cell("""\
 # Load the PyTorch traced model
