@@ -17,7 +17,7 @@ from __future__ import annotations
 import io
 import math
 from collections import Counter, OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import torch
@@ -73,6 +73,7 @@ class AnalysisReport:
     deployment_health_score: float
     overall_verdict: str
     recommendations: list[str]
+    dynamic: Any = None  # benchmarks.DynamicReport, optional
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -428,8 +429,53 @@ def _build_recommendations(
     return recs
 
 
-def analyze(buffer: bytes) -> tuple[AnalysisReport, str]:
-    """Full pipeline: bytes in, ``AnalysisReport`` out."""
+def _apply_dynamic_to_exportability(
+    exportability: CategoryReport, dynamic
+) -> CategoryReport:
+    """If we actually attempted an ONNX export, the result is ground truth --
+    upgrade or downgrade the heuristic verdict accordingly."""
+    if dynamic is None or dynamic.onnx_export is None:
+        return exportability
+    onnx = dynamic.onnx_export
+    if onnx["ok"]:
+        new_score = max(exportability.score, 90.0)
+        verdict = (
+            f"ONNX export succeeded ({onnx['size_mb']:.1f} MB, opset "
+            f"{onnx['opset']}). " + exportability.verdict
+        )
+    else:
+        new_score = min(exportability.score, 35.0)
+        verdict = (
+            f"ONNX export failed: {onnx['error']}. Address this before "
+            "TensorRT / mobile deployment."
+        )
+    details = dict(exportability.details)
+    details["onnx_attempt"] = onnx
+    return CategoryReport(score=new_score, verdict=verdict, details=details)
+
+
+def _aggregate_score(
+    precision: CategoryReport,
+    pruning: CategoryReport,
+    size: CategoryReport,
+    exportability: CategoryReport,
+) -> float:
+    score = (
+        precision.score * _CATEGORY_WEIGHTS["precision"]
+        + pruning.score * _CATEGORY_WEIGHTS["pruning"]
+        + size.score * _CATEGORY_WEIGHTS["size"]
+        + exportability.score * _CATEGORY_WEIGHTS["exportability"]
+    )
+    return max(0.0, min(100.0, score))
+
+
+def analyze(buffer: bytes, run_benchmarks: bool = False) -> tuple[AnalysisReport, str, Any]:
+    """Static analysis pipeline: bytes in, ``(report, load_mode, obj)`` out.
+
+    The third return value is the deserialized checkpoint object -- callers
+    that want to run the slow benchmarks afterwards should pass it to
+    ``attach_benchmarks`` to avoid re-loading.
+    """
     obj, load_mode = load_checkpoint(buffer)
     tensors = _iter_tensors(obj)
     file_size_mb = len(buffer) / (1024 * 1024)
@@ -439,22 +485,19 @@ def analyze(buffer: bytes) -> tuple[AnalysisReport, str]:
     size = _check_size(file_size_mb, tensors)
     exportability = _check_exportability(obj)
 
-    score = (
-        precision.score * _CATEGORY_WEIGHTS["precision"]
-        + pruning.score * _CATEGORY_WEIGHTS["pruning"]
-        + size.score * _CATEGORY_WEIGHTS["size"]
-        + exportability.score * _CATEGORY_WEIGHTS["exportability"]
-    )
-    score = max(0.0, min(100.0, score))
+    dynamic = None
+    if run_benchmarks:
+        try:
+            from benchmarks import run_dynamic_analysis
 
-    if score >= 80:
-        overall = "Deployment-ready. Ship it."
-    elif score >= 60:
-        overall = "Solid foundation -- a couple of quick wins remain."
-    elif score >= 40:
-        overall = "Functional, but you're leaving real performance on the table."
-    else:
-        overall = "Significant optimization work needed before production."
+            dynamic = run_dynamic_analysis(obj, file_size_mb)
+        except Exception:
+            dynamic = None
+
+    exportability = _apply_dynamic_to_exportability(exportability, dynamic)
+
+    score = _aggregate_score(precision, pruning, size, exportability)
+    overall = _verdict_for_score(score)
 
     parameter_count = sum(t.numel() for _, t in tensors)
     report = AnalysisReport(
@@ -469,6 +512,47 @@ def analyze(buffer: bytes) -> tuple[AnalysisReport, str]:
         recommendations=_build_recommendations(
             precision, pruning, size, exportability
         ),
+        dynamic=dynamic,
         raw={"load_mode": load_mode, "is_module": isinstance(obj, nn.Module)},
     )
-    return report, load_mode
+    return report, load_mode, obj
+
+
+def _verdict_for_score(score: float) -> str:
+    if score >= 80:
+        return "Deployment-ready. Ship it."
+    if score >= 60:
+        return "Solid foundation -- a couple of quick wins remain."
+    if score >= 40:
+        return "Functional, but you're leaving real performance on the table."
+    return "Significant optimization work needed before production."
+
+
+def attach_benchmarks(report: AnalysisReport, obj: Any) -> AnalysisReport:
+    """Run the slow live benchmarks on an already-loaded checkpoint and return
+    a new report with the dynamic results merged in.
+
+    Kept separate from ``analyze`` so the UI can render static results
+    immediately and trigger the slow path on demand.
+    """
+    from benchmarks import run_dynamic_analysis
+
+    try:
+        dynamic = run_dynamic_analysis(obj, report.file_size_mb)
+    except Exception:
+        dynamic = None
+
+    new_export = _apply_dynamic_to_exportability(report.exportability, dynamic)
+    new_score = _aggregate_score(
+        report.precision, report.pruning, report.size, new_export
+    )
+    return replace(
+        report,
+        exportability=new_export,
+        deployment_health_score=new_score,
+        overall_verdict=_verdict_for_score(new_score),
+        recommendations=_build_recommendations(
+            report.precision, report.pruning, report.size, new_export
+        ),
+        dynamic=dynamic,
+    )

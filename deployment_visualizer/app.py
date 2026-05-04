@@ -7,10 +7,15 @@ Run with:
 
 from __future__ import annotations
 
+import hashlib
+
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
-from analyzer import analyze
+from analyzer import analyze, attach_benchmarks
+import viz
 
 
 st.set_page_config(
@@ -20,72 +25,116 @@ st.set_page_config(
 )
 
 
+# ---------------------------------------------------------------------------
+# Theme / shared CSS
+# ---------------------------------------------------------------------------
+
+st.markdown(
+    """
+    <style>
+      /* Tighten Streamlit's default vertical rhythm */
+      .block-container { padding-top: 2rem; max-width: 1280px; }
+      h1, h2, h3 { letter-spacing: -0.01em; }
+      .metric-card {
+        border: 1px solid rgba(148,163,184,0.2);
+        border-radius: 14px;
+        padding: 18px 18px 14px;
+        background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0));
+      }
+      .metric-label {
+        font-size: 0.78rem; color: #94a3b8;
+        text-transform: uppercase; letter-spacing: .08em;
+      }
+      .metric-value { font-size: 2.0rem; font-weight: 700; line-height: 1.1; }
+      .metric-sub  { font-size: 0.92rem; color: #cbd5e1; margin-top: 4px; }
+      .arch-badge {
+        display: inline-block; padding: 4px 12px; border-radius: 999px;
+        background: rgba(56,189,248,0.15); color: #38bdf8; font-weight: 600;
+        font-size: 0.85rem; letter-spacing: .04em;
+      }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
 def _score_color(score: float) -> str:
     if score >= 80:
-        return "#16a34a"  # green
+        return "#16a34a"
     if score >= 60:
-        return "#65a30d"  # lime
+        return "#84cc16"
     if score >= 40:
-        return "#d97706"  # amber
-    return "#dc2626"  # red
+        return "#f59e0b"
+    return "#ef4444"
+
+
+def _gauge(score: float) -> go.Figure:
+    color = _score_color(score)
+    fig = go.Figure(
+        go.Indicator(
+            mode="gauge+number",
+            value=score,
+            number={"suffix": " / 100", "font": {"size": 38}},
+            gauge={
+                "axis": {"range": [0, 100], "tickwidth": 1, "tickcolor": "#475569"},
+                "bar": {"color": color, "thickness": 0.28},
+                "bgcolor": "rgba(0,0,0,0)",
+                "borderwidth": 0,
+                "steps": [
+                    {"range": [0, 40], "color": "rgba(239,68,68,0.18)"},
+                    {"range": [40, 60], "color": "rgba(245,158,11,0.18)"},
+                    {"range": [60, 80], "color": "rgba(132,204,22,0.18)"},
+                    {"range": [80, 100], "color": "rgba(22,163,74,0.18)"},
+                ],
+                "threshold": {
+                    "line": {"color": color, "width": 4},
+                    "thickness": 0.85, "value": score,
+                },
+            },
+        )
+    )
+    fig.update_layout(
+        margin=dict(t=10, b=10, l=20, r=20),
+        height=260,
+        paper_bgcolor="rgba(0,0,0,0)",
+    )
+    return fig
 
 
 def _score_card(label: str, score: float, verdict: str) -> None:
     color = _score_color(score)
     st.markdown(
         f"""
-        <div style="border:1px solid #e5e7eb;border-radius:12px;padding:16px;">
-          <div style="font-size:0.85rem;color:#6b7280;
-                       text-transform:uppercase;letter-spacing:.05em;">
-            {label}
+        <div class="metric-card">
+          <div class="metric-label">{label}</div>
+          <div class="metric-value" style="color:{color};">
+            {score:.0f}<span style="font-size:1rem;color:#64748b;"> / 100</span>
           </div>
-          <div style="font-size:2.2rem;font-weight:700;color:{color};
-                       line-height:1.1;margin:6px 0;">
-            {score:.0f}<span style="font-size:1rem;color:#9ca3af;"> / 100</span>
-          </div>
-          <div style="font-size:0.95rem;color:#374151;">{verdict}</div>
+          <div class="metric-sub">{verdict}</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
 
-def _hero_score(score: float, verdict: str) -> None:
-    color = _score_color(score)
-    st.markdown(
-        f"""
-        <div style="background:linear-gradient(135deg,#0f172a,#1e293b);
-                     padding:32px;border-radius:16px;color:white;
-                     display:flex;align-items:center;gap:32px;">
-          <div style="font-size:5rem;font-weight:800;color:{color};
-                       line-height:1;">
-            {score:.0f}
-          </div>
-          <div>
-            <div style="font-size:0.9rem;letter-spacing:.1em;
-                         text-transform:uppercase;color:#94a3b8;">
-              Deployment Health Score
-            </div>
-            <div style="font-size:1.5rem;font-weight:600;margin-top:4px;">
-              {verdict}
-            </div>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+def _format_flops(flops: int) -> str:
+    for unit, divisor in [("T", 1e12), ("G", 1e9), ("M", 1e6), ("K", 1e3)]:
+        if flops >= divisor:
+            return f"{flops / divisor:.2f} {unit}FLOPs"
+    return f"{flops} FLOPs"
 
 
 # ---------------------------------------------------------------------------
-# UI
+# Header
 # ---------------------------------------------------------------------------
 
 st.title("Model Deployment Health Score")
 st.markdown(
-    "Upload a PyTorch checkpoint (`.pt` or `.pth`) and get a free audit of how "
-    "deployment-ready your model is. We check **precision**, **pruning "
-    "headroom**, **size**, and **export compatibility** with ONNX / TensorRT, "
-    "then roll the results into a single score."
+    "Upload a PyTorch checkpoint (`.pt` / `.pth`) for a free deployment audit. "
+    "We inspect precision, pruning headroom, size, and ONNX / TensorRT "
+    "compatibility -- then run **live benchmarks** (latency, FLOPs, real ONNX "
+    "export, quantization & pruning simulations) to tell you exactly what to "
+    "fix."
 )
 
 with st.sidebar:
@@ -93,18 +142,20 @@ with st.sidebar:
     st.markdown(
         "- **Precision (30%)** -- FP32 weights drag the score down; FP16 / "
         "INT8 push it up.\n"
-        "- **Pruning (20%)** -- Rewards realised sparsity, flags near-zero "
-        "headroom.\n"
+        "- **Pruning (20%)** -- Realised sparsity + near-zero headroom.\n"
         "- **Size (20%)** -- Smaller artifacts deploy more easily.\n"
-        "- **Exportability (30%)** -- Penalises ops that ONNX / TensorRT "
-        "trip on.\n\n"
-        "All analysis runs locally in this Streamlit process. Nothing is "
-        "uploaded to a remote server."
+        "- **Exportability (30%)** -- Heuristic, upgraded with a real ONNX "
+        "export attempt when possible.\n\n"
+        "All analysis runs locally in this Streamlit process."
     )
     st.divider()
     st.caption(
-        "Built as a companion tool to the Neural Network Optimization course."
+        "Live benchmarks (latency / FLOPs / ONNX / quant & prune sims) run on "
+        "demand from the main panel. They take 5-30 seconds depending on "
+        "model size."
     )
+    st.divider()
+    st.caption("Companion tool to the Neural Network Optimization course.")
 
 uploaded = st.file_uploader(
     "Drop your `.pt` / `.pth` here", type=["pt", "pth"], accept_multiple_files=False
@@ -112,11 +163,11 @@ uploaded = st.file_uploader(
 
 if uploaded is None:
     st.info(
-        "Waiting for a checkpoint... You can export one with "
-        "`torch.save(model.state_dict(), 'model.pt')`."
+        "Waiting for a checkpoint... Save the **full module** "
+        "(`torch.save(model, 'demo.pt')`, not `state_dict()`) to unlock the "
+        "live benchmarks."
     )
     st.stop()
-
 
 buffer = uploaded.getvalue()
 size_mb = len(buffer) / (1024 * 1024)
@@ -127,12 +178,24 @@ if size_mb > 2048:
     )
     st.stop()
 
-with st.spinner("Analyzing checkpoint..."):
-    try:
-        report, load_mode = analyze(buffer)
-    except Exception as exc:  # noqa: BLE001 -- surfaced to the user
-        st.error(f"Could not load this checkpoint: {exc}")
-        st.stop()
+file_hash = hashlib.sha1(buffer).hexdigest()
+ss = st.session_state
+
+if ss.get("file_hash") != file_hash:
+    with st.spinner("Loading & analyzing checkpoint..."):
+        try:
+            report, load_mode, obj = analyze(buffer, run_benchmarks=False)
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Could not load this checkpoint: {exc}")
+            st.stop()
+    ss["file_hash"] = file_hash
+    ss["report"] = report
+    ss["load_mode"] = load_mode
+    ss["obj"] = obj
+    ss["benchmarks_done"] = False
+
+report = ss["report"]
+load_mode = ss["load_mode"]
 
 if load_mode == "pickle":
     st.warning(
@@ -141,7 +204,38 @@ if load_mode == "pickle":
         "with files you trust."
     )
 
-_hero_score(report.deployment_health_score, report.overall_verdict)
+# ---------------------------------------------------------------------------
+# Hero
+# ---------------------------------------------------------------------------
+
+hero_left, hero_right = st.columns([1, 2])
+
+with hero_left:
+    st.plotly_chart(_gauge(report.deployment_health_score), use_container_width=True)
+
+with hero_right:
+    st.markdown("##### Deployment Health Score")
+    st.markdown(f"### {report.overall_verdict}")
+    arch = report.dynamic.architecture_guess if report.dynamic else None
+    badges = [
+        f"<span class='arch-badge'>{report.parameter_count / 1e6:.2f}M params</span>",
+        f"<span class='arch-badge'>{report.file_size_mb:.1f} MB on disk</span>",
+    ]
+    if arch:
+        badges.insert(0, f"<span class='arch-badge'>Looks like: {arch}</span>")
+    if report.dynamic and report.dynamic.flops:
+        badges.append(
+            f"<span class='arch-badge'>{_format_flops(report.dynamic.flops)}</span>"
+        )
+    st.markdown(" ".join(badges), unsafe_allow_html=True)
+
+    st.markdown("**What to do next**")
+    for rec in report.recommendations:
+        st.markdown(f"- {rec}")
+
+# ---------------------------------------------------------------------------
+# Category breakdown
+# ---------------------------------------------------------------------------
 
 st.markdown("### Category breakdown")
 cols = st.columns(4)
@@ -156,64 +250,276 @@ with cols[3]:
         "Exportability", report.exportability.score, report.exportability.verdict
     )
 
-st.markdown("### What to do next")
-for rec in report.recommendations:
-    st.markdown(f"- {rec}")
+# ---------------------------------------------------------------------------
+# Live benchmarks (opt-in -- they're slow on big models)
+# ---------------------------------------------------------------------------
 
-st.markdown("### Drill down")
+if not ss.get("benchmarks_done") and report.dynamic is None:
+    st.markdown("### Live benchmarks")
+    is_module = report.raw.get("is_module", False)
+    if is_module:
+        button_label = "Run live benchmarks"
+        help_text = (
+            "Runs a real forward pass, attempts an ONNX export, and simulates "
+            "INT8 quantization + magnitude pruning. Takes ~5s on small models, "
+            "up to a minute on large ones."
+        )
+    else:
+        button_label = "Run available benchmarks"
+        help_text = (
+            "Checkpoint is a state-dict only -- we'll fingerprint the "
+            "architecture but can't run a forward pass without the module."
+        )
+    if st.button(button_label, type="primary", help=help_text):
+        with st.spinner("Benchmarking (forward pass, ONNX export, quant/prune sims)..."):
+            ss["report"] = attach_benchmarks(ss["report"], ss["obj"])
+            ss["benchmarks_done"] = True
+        st.rerun()
 
-precision_tab, pruning_tab, export_tab, raw_tab = st.tabs(
-    ["Precision", "Pruning", "Exportability", "Raw"]
+dyn = ss["report"].dynamic
+report = ss["report"]
+if dyn is not None:
+    st.markdown("### Live benchmarks")
+    for note in dyn.notes:
+        st.info(note)
+    if dyn.input_shape is not None:
+        b1, b2, b3, b4 = st.columns(4)
+        b1.metric(
+            "Latency (mean)",
+            f"{dyn.latency_ms_mean:.2f} ms" if dyn.latency_ms_mean else "n/a",
+        )
+        b2.metric(
+            "Latency (p95)",
+            f"{dyn.latency_ms_p95:.2f} ms" if dyn.latency_ms_p95 else "n/a",
+        )
+        b3.metric(
+            "Peak activations",
+            f"{dyn.peak_activation_mb:.1f} MB" if dyn.peak_activation_mb else "n/a",
+        )
+        b4.metric(
+            "FLOPs / forward",
+            _format_flops(dyn.flops) if dyn.flops else "n/a",
+        )
+        st.caption(
+            f"Run on CPU with dummy input shape {tuple(dyn.input_shape)}. "
+            "Latency varies with hardware -- relative comparisons are what matter."
+        )
+
+    # ONNX export attempt
+    if dyn.onnx_export is not None:
+        if dyn.onnx_export["ok"]:
+            st.success(
+                f"Real ONNX export succeeded -- {dyn.onnx_export['size_mb']:.1f} MB "
+                f"at opset {dyn.onnx_export['opset']}."
+            )
+        else:
+            st.error(f"ONNX export failed: {dyn.onnx_export['error']}")
+
+# ---------------------------------------------------------------------------
+# What-if simulations
+# ---------------------------------------------------------------------------
+
+if dyn is not None and (dyn.quantization_sim or dyn.pruning_sim):
+    st.markdown("### What if you optimized this?")
+    st.caption(
+        "Simulations applied to a copy of your model -- nothing modifies the "
+        "uploaded file. Output drift is measured against the unmodified model "
+        "on the dummy input."
+    )
+
+    sim_left, sim_right = st.columns(2)
+
+    with sim_left:
+        st.markdown("**Dynamic INT8 quantization**")
+        q = dyn.quantization_sim
+        if q:
+            qa, qb = st.columns(2)
+            qa.metric("New size", f"{q['size_mb']:.1f} MB",
+                      delta=f"-{q['size_reduction_pct']:.1f}%")
+            qb.metric(
+                "Output drift",
+                f"{q['output_drift']:.3f}" if q['output_drift'] is not None else "n/a",
+                help="0 = identical to original. >0.1 may need calibration.",
+            )
+            st.caption(
+                f"Quantizes {', '.join(q['supported_layers'])}. "
+                "Conv layers need static / QAT pipelines for full INT8 savings."
+            )
+        else:
+            st.caption(
+                "Dynamic quantization didn't run -- this model has no "
+                "Linear/LSTM/GRU layers, or quantization tripped on a custom op."
+            )
+
+    with sim_right:
+        st.markdown("**Magnitude pruning**")
+        if dyn.pruning_sim:
+            df = pd.DataFrame(dyn.pruning_sim)
+            df["ratio"] = df["ratio"].map(lambda r: f"{int(r*100)}%")
+            df = df.rename(columns={
+                "ratio": "Prune ratio",
+                "theoretical_size_mb": "Size (sparse, MB)",
+                "output_drift": "Output drift",
+            })
+            df["Output drift"] = df["Output drift"].map(
+                lambda x: f"{x:.3f}" if x is not None else "n/a"
+            )
+            df["Size (sparse, MB)"] = df["Size (sparse, MB)"].map(lambda x: f"{x:.1f}")
+            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.caption(
+                "Sizes assume sparse storage or a quant+prune export. Drift "
+                "values <0.1 usually recover with a short fine-tune."
+            )
+        else:
+            st.caption("Pruning simulation skipped (no Linear/Conv layers).")
+
+# ---------------------------------------------------------------------------
+# Inside your model -- visualizations
+# ---------------------------------------------------------------------------
+
+st.markdown("### Inside your model")
+st.caption(
+    "Where the weight (and the cost) actually lives. Hover, zoom, click into "
+    "branches."
 )
 
-with precision_tab:
+obj = ss.get("obj")
+
+# 1. Architecture treemap -- one glance: which modules eat your parameter budget?
+tree = viz.module_tree(obj)
+if tree:
+    df = pd.DataFrame(tree)
+    fig = go.Figure(go.Treemap(
+        ids=df["id"],
+        labels=df["label"],
+        parents=df["parent"],
+        values=df["params"],
+        branchvalues="total",
+        hovertemplate="<b>%{label}</b><br>%{value:,} params<br>%{percentRoot:.1%} of model<extra></extra>",
+        marker=dict(
+            colors=df["params"],
+            colorscale="Tealgrn",
+            showscale=False,
+            line=dict(width=1, color="rgba(15,23,42,0.4)"),
+        ),
+        textfont=dict(size=13),
+    ))
+    fig.update_layout(
+        height=460,
+        margin=dict(t=10, b=10, l=10, r=10),
+        paper_bgcolor="rgba(0,0,0,0)",
+    )
+    st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info(
+        "Treemap unavailable -- this checkpoint doesn't expose module "
+        "structure (probably a tensor-only file)."
+    )
+
+# 2. Two-column visual breakdown
+viz_left, viz_right = st.columns(2)
+
+with viz_left:
+    st.markdown("#### Per-layer parameter cost")
+    layers = viz.per_layer_costs(obj)
+    if layers:
+        df = pd.DataFrame(layers).head(15)
+        df["short_name"] = df["name"].apply(
+            lambda s: s if len(s) <= 30 else "..." + s[-27:]
+        )
+        fig = px.bar(
+            df,
+            x="params", y="short_name", color="type",
+            orientation="h",
+            hover_data={"name": True, "short_name": False, "params": ":,", "type": True},
+            labels={"params": "Parameters", "short_name": "", "type": "Module"},
+        )
+        fig.update_layout(
+            height=420, margin=dict(t=10, b=10, l=10, r=10),
+            yaxis=dict(autorange="reversed"),
+            legend=dict(orientation="h", y=-0.2),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    elif report.raw.get("is_module"):
+        st.info("All leaf modules report 0 parameters (unusual).")
+    else:
+        st.info(
+            "Per-layer breakdown needs the full ``nn.Module``. Save with "
+            "``torch.save(model, ...)`` for this view."
+        )
+
+with viz_right:
+    st.markdown("#### Weight magnitude distributions")
+    hists = viz.weight_histograms(obj)
+    if hists:
+        for h in hists:
+            edges = h["bin_edges"]
+            counts = h["counts"]
+            centers = [(edges[i] + edges[i+1]) / 2 for i in range(len(counts))]
+            short = h["name"] if len(h["name"]) <= 40 else "..." + h["name"][-37:]
+            fig = go.Figure(go.Bar(
+                x=centers, y=counts,
+                marker=dict(color="#38bdf8"),
+                hovertemplate="|w|=%{x:.4f}<br>count=%{y}<extra></extra>",
+            ))
+            fig.update_layout(
+                title=dict(
+                    text=f"{short}  ·  shape={tuple(h['shape'])}",
+                    font=dict(size=12),
+                ),
+                height=180,
+                margin=dict(t=30, b=20, l=10, r=10),
+                xaxis_title="|weight|",
+                yaxis_title=None,
+                bargap=0.0,
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(15,23,42,0.04)",
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        st.caption(
+            "Heavy mass near zero = pruning headroom. A long tail to the "
+            "right = a few very large weights driving the layer."
+        )
+    else:
+        st.info("No 2D+ weight tensors to plot.")
+
+# 3. Compact module-class composition + dtype mix as side-by-side donuts.
+mix_left, mix_right = st.columns(2)
+
+with mix_left:
+    classes = report.exportability.details.get("module_classes", {})
+    if classes:
+        st.markdown("#### Module class mix")
+        cdf = pd.DataFrame(
+            [(k, v) for k, v in classes.items()], columns=["class", "count"]
+        )
+        fig = px.pie(
+            cdf, values="count", names="class", hole=0.55,
+            color_discrete_sequence=px.colors.sequential.Teal,
+        )
+        fig.update_layout(height=320, margin=dict(t=10, b=10),
+                          showlegend=True,
+                          legend=dict(orientation="v", x=1.02, y=0.5))
+        st.plotly_chart(fig, use_container_width=True)
+
+with mix_right:
     dist = report.precision.details.get("dtype_distribution", {})
     if dist:
-        df = pd.DataFrame(
+        st.markdown("#### Precision mix")
+        ddf = pd.DataFrame(
             [(k, v) for k, v in dist.items()], columns=["dtype", "elements"]
-        ).sort_values("elements", ascending=False)
-        st.bar_chart(df.set_index("dtype"))
-        st.dataframe(df, use_container_width=True, hide_index=True)
-    bytes_in_mem = report.precision.details.get("bytes_in_memory", 0)
-    st.caption(f"Total weight bytes in memory: {bytes_in_mem / 1e6:.2f} MB")
-
-with pruning_tab:
-    sparsity = report.pruning.details.get("global_sparsity", 0.0)
-    headroom = report.pruning.details.get("near_zero_headroom", 0.0)
-    a, b = st.columns(2)
-    a.metric("Global sparsity (exact zeros)", f"{sparsity:.2%}")
-    b.metric("Near-zero headroom (|w| < 1% of max)", f"{headroom:.2%}")
-    layers = report.pruning.details.get("top_layers", [])
-    if layers:
-        st.markdown("**Layers with the most pruning headroom**")
-        df = pd.DataFrame(layers)
-        df["sparsity"] = df["sparsity"].map(lambda x: f"{x:.2%}")
-        df["near_zero_fraction"] = df["near_zero_fraction"].map(
-            lambda x: f"{x:.2%}"
         )
-        st.dataframe(df, use_container_width=True, hide_index=True)
-
-with export_tab:
-    details = report.exportability.details
-    if details.get("is_state_dict"):
-        st.info(
-            "Checkpoint contains weights only -- we couldn't introspect the "
-            "module graph. Re-run after pickling the full ``nn.Module`` for a "
-            "more precise verdict."
+        fig = px.pie(
+            ddf, values="elements", names="dtype", hole=0.55,
+            color_discrete_sequence=px.colors.sequential.Sunset,
         )
-    a, b = st.columns(2)
-    a.metric("ONNX-risky modules", details.get("onnx_risky_modules", 0))
-    b.metric("TensorRT-risky modules", details.get("tensorrt_risky_modules", 0))
-    classes = details.get("module_classes", {})
-    if classes:
-        st.markdown("**Module class mix**")
-        df = pd.DataFrame(
-            [(k, v) for k, v in classes.items()],
-            columns=["class", "count"],
-        ).sort_values("count", ascending=False)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        fig.update_layout(height=320, margin=dict(t=10, b=10),
+                          showlegend=True,
+                          legend=dict(orientation="v", x=1.02, y=0.5))
+        st.plotly_chart(fig, use_container_width=True)
 
-with raw_tab:
+# Power-user JSON dump, hidden by default.
+with st.expander("Raw analysis JSON"):
     st.json(
         {
             "file_size_mb": report.file_size_mb,
@@ -238,6 +544,18 @@ with raw_tab:
                 "score": report.exportability.score,
                 "verdict": report.exportability.verdict,
                 "details": report.exportability.details,
+            },
+            "dynamic": {
+                "input_shape": list(report.dynamic.input_shape)
+                if (report.dynamic and report.dynamic.input_shape) else None,
+                "latency_ms_mean": report.dynamic.latency_ms_mean if report.dynamic else None,
+                "latency_ms_p95": report.dynamic.latency_ms_p95 if report.dynamic else None,
+                "peak_activation_mb": report.dynamic.peak_activation_mb if report.dynamic else None,
+                "flops": report.dynamic.flops if report.dynamic else None,
+                "onnx_export": report.dynamic.onnx_export if report.dynamic else None,
+                "quantization_sim": report.dynamic.quantization_sim if report.dynamic else None,
+                "pruning_sim": report.dynamic.pruning_sim if report.dynamic else [],
+                "architecture_guess": report.dynamic.architecture_guess if report.dynamic else None,
             },
         }
     )
