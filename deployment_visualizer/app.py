@@ -269,19 +269,87 @@ with st.sidebar:
         "Streamlit."
     )
 
+# ---------------------------------------------------------------------------
+# Upload area + sample model downloader
+# ---------------------------------------------------------------------------
+
+import demo_models  # noqa: E402
+
+ss = st.session_state
+
 uploaded = st.file_uploader(
     "Drop your `.pt` / `.pth` here", type=["pt", "pth"], accept_multiple_files=False
 )
 
-if uploaded is None:
+st.markdown("##### Or try a sample model")
+st.caption(
+    "Public weights, downloaded straight from the original release. "
+    "Cached locally after the first click."
+)
+demo_cols = st.columns(len(demo_models.DEMOS))
+for col, dm in zip(demo_cols, demo_models.DEMOS):
+    cached_label = " · cached" if demo_models.is_cached(dm) else ""
+    with col:
+        st.markdown(
+            f"""
+            <div class="metric-card" style="padding:14px 16px;height:170px;
+                                              display:flex;flex-direction:column;
+                                              justify-content:space-between;">
+              <div>
+                <div class="metric-label">{dm.domain.upper()}</div>
+                <div style="font-size:1.05rem;font-weight:700;
+                             margin:4px 0 6px;">
+                  {dm.name}
+                </div>
+                <div class="metric-sub" style="font-size:0.82rem;
+                                                 color:#94a3b8;">
+                  {dm.one_liner}
+                </div>
+              </div>
+              <div style="font-size:0.72rem;color:#64748b;
+                           margin-top:6px;">
+                ~{dm.size_mb:.0f} MB{cached_label}
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.button(
+            "Use this model",
+            key=f"demo_{dm.key}",
+            use_container_width=True,
+        ):
+            with st.spinner(f"Fetching {dm.name}..."):
+                progress = st.progress(0.0)
+                def _cb(done, total, p=progress):
+                    p.progress(min(1.0, done / total) if total else 0.5)
+                try:
+                    data = demo_models.download(dm, on_progress=_cb)
+                except Exception as exc:  # noqa: BLE001
+                    st.error(str(exc))
+                    st.stop()
+                progress.empty()
+            ss["demo_buffer"] = data
+            ss["demo_name"] = dm.name
+            st.rerun()
+
+# Resolve which buffer we're working with: a freshly uploaded file always wins
+# over a previously-loaded demo, but a demo loaded earlier this session
+# persists across reruns until the user clears it or uploads.
+if uploaded is not None:
+    buffer = uploaded.getvalue()
+    source_label = uploaded.name
+elif "demo_buffer" in ss:
+    buffer = ss["demo_buffer"]
+    source_label = ss.get("demo_name", "demo model")
+else:
     st.info(
-        "Waiting for a checkpoint... Save the **full module** "
-        "(`torch.save(model, 'demo.pt')`, not `state_dict()`) to unlock the "
-        "live benchmarks."
+        "Waiting for a checkpoint -- drop a file above or pick a sample model."
     )
     st.stop()
 
-buffer = uploaded.getvalue()
+st.caption(f"Analyzing: **{source_label}**")
+
 size_mb = len(buffer) / (1024 * 1024)
 if size_mb > 2048:
     st.error(
@@ -291,7 +359,6 @@ if size_mb > 2048:
     st.stop()
 
 file_hash = hashlib.sha1(buffer).hexdigest()
-ss = st.session_state
 
 if ss.get("file_hash") != file_hash:
     with st.spinner("Loading & analyzing checkpoint..."):
@@ -412,17 +479,123 @@ if ss.get("applied_actions"):
     with bar_r:
         st.button("Reset", on_click=_reset_optimizations, use_container_width=True)
 
-tab_network, tab_opportunities, tab_deployment = st.tabs([
-    "1. The network",
+# Build the model passport once -- used in Tab 1 and elsewhere.
+from passport import build_passport  # noqa: E402
+
+passport = build_passport(ss["obj"], report.architecture)
+
+tab_about, tab_opportunities, tab_deployment, tab_optimization = st.tabs([
+    "1. About",
     "2. Opportunities",
     "3. Deployment",
+    "4. Optimization",
 ])
 
 # =====================================================================
-# Tab 1 -- The network: stats, weight visual, category breakdown +
-# 1-click Optimize buttons under each category card
+# Tab 1 -- About: who this model is, what it expects, what it does
 # =====================================================================
-with tab_network:
+with tab_about:
+    st.markdown("### Model passport")
+    st.caption(
+        "A spec sheet for the artifact you uploaded. Everything here is "
+        "inferred from the file itself -- no forward pass needed."
+    )
+
+    p1, p2 = st.columns(2)
+    with p1:
+        arch_label = passport.architecture or "Unknown architecture"
+        st.markdown(
+            f"""
+            <div class="metric-card" style="padding:22px 24px;">
+              <div class="metric-label">Architecture</div>
+              <div style="font-size:1.6rem;font-weight:800;color:#38bdf8;
+                           margin:4px 0 14px;line-height:1.1;">
+                {arch_label}
+              </div>
+              <div style="display:grid;grid-template-columns:120px 1fr;
+                           gap:6px 14px;font-size:0.92rem;color:#cbd5e1;">
+                <div style="color:#94a3b8;">Likely task</div>
+                <div><b>{passport.likely_task}</b></div>
+                <div style="color:#94a3b8;">Trained on</div>
+                <div>{passport.likely_dataset or "Unknown / custom dataset"}</div>
+                <div style="color:#94a3b8;">Parameters</div>
+                <div>{stats.parameter_count / 1e6:.2f}M</div>
+                <div style="color:#94a3b8;">Layers</div>
+                <div>{stats.leaf_modules}</div>
+                <div style="color:#94a3b8;">On disk</div>
+                <div>{report.file_size_mb:.1f} MB</div>
+                <div style="color:#94a3b8;">Compute</div>
+                <div>~{_format_flops(report.estimated_flops or 0)} per forward</div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with p2:
+        out_dim_str = (
+            ", ".join(str(x) for x in passport.output_shape)
+            if passport.output_shape else "?"
+        )
+        in_dim_str = (
+            ", ".join(str(x) for x in passport.input_shape)
+            if passport.input_shape else "?"
+        )
+        sample_html = ""
+        if passport.sample_classes:
+            sample_html = (
+                "<div style='font-size:0.85rem;color:#94a3b8;"
+                "margin-top:10px;'>Likely outputs include: "
+                + ", ".join(f"<i>{c}</i>" for c in passport.sample_classes)
+                + ", ...</div>"
+            )
+        st.markdown(
+            f"""
+            <div class="metric-card" style="padding:22px 24px;">
+              <div class="metric-label">Data flow</div>
+              <div style="display:flex;align-items:center;gap:14px;
+                           margin:18px 0;">
+                <div style="flex:1;text-align:center;">
+                  <div style="font-size:0.72rem;color:#94a3b8;
+                               letter-spacing:.1em;">INPUT</div>
+                  <div style="font-size:1.05rem;font-weight:700;
+                               color:#86efac;margin:4px 0;">
+                    {passport.input_description}
+                  </div>
+                  <div style="font-size:0.78rem;color:#64748b;
+                               font-family:ui-monospace,monospace;">
+                    [{in_dim_str}]
+                  </div>
+                </div>
+                <div style="font-size:1.4rem;color:#38bdf8;">→</div>
+                <div style="flex:0 0 auto;font-size:0.72rem;
+                             color:#38bdf8;letter-spacing:.1em;
+                             font-weight:800;
+                             padding:6px 12px;border-radius:8px;
+                             background:rgba(56,189,248,0.10);
+                             border:1px solid rgba(56,189,248,0.30);">
+                  {arch_label}
+                </div>
+                <div style="font-size:1.4rem;color:#38bdf8;">→</div>
+                <div style="flex:1;text-align:center;">
+                  <div style="font-size:0.72rem;color:#94a3b8;
+                               letter-spacing:.1em;">OUTPUT</div>
+                  <div style="font-size:1.05rem;font-weight:700;
+                               color:#fca5a5;margin:4px 0;">
+                    {passport.output_description}
+                  </div>
+                  <div style="font-size:0.78rem;color:#64748b;
+                               font-family:ui-monospace,monospace;">
+                    [{out_dim_str}]
+                  </div>
+                </div>
+              </div>
+              {sample_html}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
     st.markdown("### Network at a glance")
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Parameters", f"{stats.parameter_count / 1e6:.2f}M")
@@ -495,70 +668,29 @@ with tab_network:
                 unsafe_allow_html=True,
             )
 
-    st.markdown("### Category breakdown")
-    st.caption(
-        "Click **Optimize** under any card to apply the matching action. The "
-        "score updates in place and the actual code we ran appears below."
-    )
-
-    # Map each category to its underlying score, current report, original report
-    # (for delta), and the one-click action that fixes it.
-    category_specs = [
-        ("Efficiency",   report.precision,    original_report.precision,    "efficient"),
-        ("Leanness",     report.pruning,      original_report.pruning,      "lean"),
-        ("Compactness",  report.size,         original_report.size,         "compact"),
-        ("Exportability", report.exportability, original_report.exportability, "export"),
-    ]
-    cols = st.columns(4)
-    button_labels = {
-        "efficient": "Optimize",
-        "lean":      "Optimize",
-        "compact":   "Optimize",
-        "export":    "Try export",
-    }
-    for col, (label, cur, orig, action) in zip(cols, category_specs):
-        with col:
-            delta = cur.score - orig.score if ss.get("applied_actions") else None
-            _score_card(label, cur.score, cur.verdict, delta=delta)
-            st.button(
-                button_labels[action],
-                key=f"opt_{action}",
-                on_click=_apply_optimization,
-                args=(action,),
-                use_container_width=True,
-                help=(
-                    "Try a real ONNX export on this model."
-                    if action == "export"
-                    else "Apply the action and see the score move in place."
-                ),
-            )
-
-    # Surface the most recent code snippet just below the category cards so
-    # it sits in eyeshot of the button that produced it.
-    last = ss.get("last_snippet")
-    if last:
-        snippet, err = last
-        with st.expander(f"What just happened: {snippet.title}", expanded=True):
-            st.markdown(f"_{snippet.summary}_")
-            if err:
-                st.error(f"Result: {err}")
-            else:
-                st.success("Result: applied successfully.")
-            st.code(snippet.code, language="python")
-            st.caption(
-                f"Lifted from `{snippet.notebook}` in the course repo. "
-                "The notebook walks through *why* it works, not just what."
-            )
-
 # =====================================================================
-# Tab 2 -- Opportunities: hero recommendations + quantified callouts
+# Tab 2 -- Opportunities: category breakdown + weaknesses + problems
 # =====================================================================
 with tab_opportunities:
-    st.markdown("### Weaknesses & opportunities")
+    st.markdown("### Category breakdown")
     st.caption(
-        "What's wrong with this model -- in plain language. No fixes yet, "
-        "just the gap."
+        "Four dimensions of deployment-readiness. None of these are "
+        "techniques you should run -- they're attributes the model has."
     )
+    cols = st.columns(4)
+    with cols[0]:
+        _score_card("Efficiency", report.precision.score, report.precision.verdict)
+    with cols[1]:
+        _score_card("Leanness", report.pruning.score, report.pruning.verdict)
+    with cols[2]:
+        _score_card("Compactness", report.size.score, report.size.verdict)
+    with cols[3]:
+        _score_card(
+            "Exportability", report.exportability.score, report.exportability.verdict
+        )
+
+    st.markdown("### Weaknesses & opportunities")
+    st.caption("What's wrong with this model, in plain language.")
     for rec in report.recommendations:
         st.markdown(f"- {rec}")
 
@@ -647,6 +779,159 @@ with tab_deployment:
                 """,
                 unsafe_allow_html=True,
             )
+
+# =====================================================================
+# Tab 4 -- Optimization: pick a technique, see the score move, learn how
+# =====================================================================
+with tab_optimization:
+    from optimizers import TECHNIQUES, try_export_onnx  # noqa: E402
+
+    st.markdown("### Pick an optimization")
+    st.caption(
+        "Each technique is one move in the deployment-engineer toolkit. "
+        "Apply it here to see the model's score move; the exact code from "
+        "the matching course notebook appears below."
+    )
+
+    technique_keys = [t.key for t in TECHNIQUES]
+    technique_labels = {t.key: t.label for t in TECHNIQUES}
+    technique_descriptions = {t.key: t.description for t in TECHNIQUES}
+    technique_notebooks = {t.key: t.notebook for t in TECHNIQUES}
+    technique_apply = {t.key: t.apply for t in TECHNIQUES}
+
+    chosen = st.radio(
+        "Technique",
+        technique_keys,
+        format_func=lambda k: technique_labels[k],
+        index=0,
+        key="opt_technique",
+        label_visibility="collapsed",
+    )
+    st.info(technique_descriptions[chosen])
+    st.caption(f"Course material: `{technique_notebooks[chosen]}` in this repo.")
+
+    apply_col, reset_col = st.columns([2, 1])
+    with apply_col:
+        if st.button(
+            f"Apply: {technique_labels[chosen]}",
+            type="primary", use_container_width=True, key="opt_apply",
+        ):
+            import io
+            import torch as _torch
+            obj_in = ss["original_obj"]
+            new_obj, snippet = technique_apply[chosen](obj_in)
+            bio = io.BytesIO()
+            _torch.save(new_obj, bio)
+            new_report, _mode, new_obj_loaded = analyze(bio.getvalue())
+            ss["obj"] = new_obj_loaded
+            ss["report"] = new_report
+            ss["applied_actions"] = [technique_labels[chosen]]
+            ss["last_snippet"] = (snippet, None)
+            st.rerun()
+    with reset_col:
+        if st.button(
+            "Reset to original", use_container_width=True, key="opt_reset"
+        ):
+            _reset_optimizations()
+            st.rerun()
+
+    with st.expander("Why precision matters (the 30-second version)"):
+        st.markdown(
+            "Every weight in your model is a number stored at some precision. "
+            "The fewer bits per number, the less memory it takes, the less "
+            "bandwidth your hardware spends moving it around, and the faster "
+            "your model runs. Modern deployment chips have dedicated "
+            "low-precision math units that sit idle when you ship at full "
+            "precision."
+        )
+        st.markdown(
+            """
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;
+                         gap:12px;margin-top:12px;">
+              <div class="metric-card" style="padding:14px 16px;">
+                <div class="metric-label">FP32</div>
+                <div style="font-size:1.4rem;font-weight:800;color:#fca5a5;
+                             margin:4px 0;">32 bits</div>
+                <div class="metric-sub">Where most models are trained.
+                Almost never where they should ship.</div>
+              </div>
+              <div class="metric-card" style="padding:14px 16px;">
+                <div class="metric-label">FP16</div>
+                <div style="font-size:1.4rem;font-weight:800;color:#fcd34d;
+                             margin:4px 0;">16 bits</div>
+                <div class="metric-sub">Half the memory, same accuracy
+                for almost any inference task.</div>
+              </div>
+              <div class="metric-card" style="padding:14px 16px;">
+                <div class="metric-label">INT8</div>
+                <div style="font-size:1.4rem;font-weight:800;color:#86efac;
+                             margin:4px 0;">8 bits</div>
+                <div class="metric-sub">A quarter of the carry weight.
+                Pays for itself immediately on edge hardware.</div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("### Score after optimization")
+    has_applied = bool(ss.get("applied_actions"))
+    cols = st.columns(4)
+    pairs = [
+        ("Efficiency", report.precision, original_report.precision),
+        ("Leanness", report.pruning, original_report.pruning),
+        ("Compactness", report.size, original_report.size),
+        ("Exportability", report.exportability, original_report.exportability),
+    ]
+    for col, (label, cur, orig) in zip(cols, pairs):
+        with col:
+            delta = cur.score - orig.score if has_applied else None
+            _score_card(label, cur.score, cur.verdict, delta=delta)
+
+    if has_applied:
+        delta_score = (
+            report.deployment_health_score
+            - original_report.deployment_health_score
+        )
+        sign = "+" if delta_score >= 0 else ""
+        st.success(
+            f"Overall score: **{original_report.deployment_health_score:.0f} "
+            f"→ {report.deployment_health_score:.0f}** ({sign}{delta_score:.0f})"
+        )
+
+    st.markdown("### Try a real ONNX export")
+    st.caption(
+        "ONNX export is the first runtime step every deployment team takes. "
+        "Run it here and see whether your model survives the trip to a "
+        "deploy-grade runtime."
+    )
+    if st.button("Export to ONNX", key="opt_onnx"):
+        with st.spinner("Tracing the graph..."):
+            _, snippet, err = try_export_onnx(ss["original_obj"])
+        ss["onnx_result"] = (snippet, err)
+
+    onnx_result = ss.get("onnx_result")
+    if onnx_result:
+        snippet, err = onnx_result
+        if err:
+            st.error(f"Export failed: {err}")
+        else:
+            st.success("Export succeeded -- the model traces cleanly.")
+        with st.expander("The course code that does this", expanded=not err):
+            st.markdown(f"_{snippet.summary}_")
+            st.code(snippet.code, language="python")
+            st.caption(f"From `{snippet.notebook}` in the course repo.")
+
+    last = ss.get("last_snippet")
+    if last:
+        snippet, err = last
+        st.markdown("### What just happened")
+        st.markdown(f"**{snippet.title}** — _{snippet.summary}_")
+        st.code(snippet.code, language="python")
+        st.caption(
+            f"Lifted directly from `{snippet.notebook}` in this repo. The "
+            "notebook walks through *why* each step works, not just what."
+        )
 
 st.divider()
 st.markdown(

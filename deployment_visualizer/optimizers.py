@@ -1,14 +1,20 @@
-"""One-click optimization actions for the deployment visualizer.
+"""One-click optimization actions, mirroring the course notebooks.
 
-Each function takes a checkpoint object (``nn.Module`` or state-dict) and
-returns a transformed copy plus a ``Snippet`` that shows the user the actual
-PyTorch code that would have done the same thing -- so the tool teaches as
-it transforms, mirroring the lesson notebooks shipped in this repo.
+Each function takes a checkpoint object (``nn.Module`` or state-dict),
+applies the canonical course-recipe transformation, and returns the new
+object plus a ``Snippet`` showing the actual PyTorch code from the matching
+notebook in this repo.
+
+When a state-dict is uploaded but a known architecture is detected, we
+quietly load the weights into a torchvision model so the heavier actions
+(dynamic quantization, ONNX export) can run on something that actually has
+a ``forward()``.
 """
 
 from __future__ import annotations
 
 import copy
+import io
 from dataclasses import dataclass
 from typing import Any
 
@@ -20,8 +26,8 @@ from torch import nn
 class Snippet:
     title: str
     code: str
-    notebook: str   # path to the notebook this lesson lives in
-    summary: str    # one-line plain-English description
+    notebook: str   # filename of the source notebook in this repo
+    summary: str    # plain-English one-liner
 
 
 # ---------------------------------------------------------------------------
@@ -29,30 +35,19 @@ class Snippet:
 # ---------------------------------------------------------------------------
 
 
-def _walk_float_tensors(obj: Any):
-    """Yield ``(setter, tensor)`` pairs for every float tensor reachable in
-    a state-dict.  ``setter(new_tensor)`` overwrites the tensor in place.
-    ``nn.Module`` callers can rebuild a state-dict and call
-    ``module.load_state_dict`` afterwards."""
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            if isinstance(v, torch.Tensor) and v.dtype.is_floating_point:
-                yield (lambda val, _k=k: obj.__setitem__(_k, val)), v
-
-
-def _module_to_state_dict_copy(obj):
-    """Always operate on a state-dict copy so we never mutate the user's
-    uploaded object.  For modules we extract+copy the state-dict, transform
-    it, then load it back into a deep-copied module."""
+def _state_dict_copy(obj):
+    """Always operate on a deep-copied state-dict so we never mutate the
+    user's uploaded object."""
     if isinstance(obj, nn.Module):
-        sd = {k: v.detach().clone() for k, v in obj.state_dict().items()}
-        return sd, "module"
+        return {k: v.detach().clone() for k, v in obj.state_dict().items()}, "module"
     if isinstance(obj, dict):
-        sd = {
-            k: (v.detach().clone() if isinstance(v, torch.Tensor) else v)
-            for k, v in obj.items()
-        }
-        return sd, "state_dict"
+        return (
+            {
+                k: (v.detach().clone() if isinstance(v, torch.Tensor) else v)
+                for k, v in obj.items()
+            },
+            "state_dict",
+        )
     return obj, "unknown"
 
 
@@ -64,49 +59,133 @@ def _rebuild(orig, sd, kind):
     return sd
 
 
+def _ensure_module(obj):
+    """If obj is a state-dict whose architecture we recognise, instantiate
+    the matching torchvision model and load the weights into it.  Returns
+    ``(module_or_None, error_or_None)``."""
+    if isinstance(obj, nn.Module):
+        return obj, None
+
+    from benchmarks import fingerprint, try_load_into_arch, _TORCHVISION_BUILDERS
+
+    arch = fingerprint(obj)
+    if not arch:
+        return None, (
+            "We can't run this without the architecture. Save the full "
+            "model with ``torch.save(model, ...)`` (not ``state_dict()``)."
+        )
+
+    # Try every torchvision builder whose name starts with the fingerprint.
+    candidates = [name for name in _TORCHVISION_BUILDERS if name.startswith(arch)]
+    last_err = None
+    for cand in candidates:
+        module, err = try_load_into_arch(obj, cand)
+        if module is not None:
+            return module, None
+        last_err = err
+    return None, last_err or f"Couldn't find a matching {arch} variant."
+
+
 # ---------------------------------------------------------------------------
 # Optimizations
 # ---------------------------------------------------------------------------
 
 
 def make_efficient(obj: Any) -> tuple[Any, Snippet]:
-    """Cast every float-32 weight to float-16.  This is the single cheapest
-    optimization there is -- one line of code, half the memory, usually
-    indistinguishable accuracy on inference."""
-    sd, kind = _module_to_state_dict_copy(obj)
+    """Half-precision: cast every FP32 weight to FP16."""
+    sd, kind = _state_dict_copy(obj)
     if kind == "unknown":
-        return obj, _SNIPPET_EFFICIENT
+        return obj, _SNIPPET_HALF
     for k, v in list(sd.items()):
         if isinstance(v, torch.Tensor) and v.dtype == torch.float32:
             sd[k] = v.half()
-    return _rebuild(obj, sd, kind), _SNIPPET_EFFICIENT
+    return _rebuild(obj, sd, kind), _SNIPPET_HALF
 
 
-_SNIPPET_EFFICIENT = Snippet(
-    title="Cast every weight to half precision",
-    summary="The cheapest optimization there is. One line of code, half the carry weight.",
+_SNIPPET_HALF = Snippet(
+    title="Half-precision cast",
+    summary="The cheapest deployment move. One line, half the carry weight.",
     notebook="Mini_Quantization.ipynb",
     code=(
-        "import torch\n"
-        "\n"
-        "# Cast every float weight from FP32 to FP16.\n"
-        "# A deploy-grade artifact almost never carries FP32 anymore.\n"
-        "state_dict = torch.load('model.pt')\n"
-        "for k, v in state_dict.items():\n"
-        "    if v.dtype == torch.float32:\n"
-        "        state_dict[k] = v.half()\n"
-        "torch.save(state_dict, 'model_half.pt')\n"
+        "# Half-precision: every weight goes from FP32 to FP16.\n"
+        "# Inference accuracy stays effectively identical for most\n"
+        "# vision and audio models.\n"
+        "model = model.half()\n"
+        "torch.save(model.state_dict(), 'model_fp16.pt')\n"
     ),
 )
 
 
-def make_lean(obj: Any, ratio: float = 0.5) -> tuple[Any, Snippet]:
-    """Magnitude-prune the smallest ``ratio`` fraction of each 2D+ weight
-    tensor by setting them to zero.  Real production pruning would fine-tune
-    afterwards to recover accuracy -- we don't (this is a demonstration)."""
-    sd, kind = _module_to_state_dict_copy(obj)
+def make_dynamic_quantized(obj: Any) -> tuple[Any, Snippet]:
+    """Dynamic INT8 quantization on Linear layers -- the canonical
+    course recipe from Mini_Quantization.ipynb.  Falls back gracefully
+    if the obj is a state-dict we can't materialise."""
+    module, err = _ensure_module(obj)
+    if module is None:
+        # Fall back to FP16 as the next-best move on a bare state-dict.
+        new_obj, _ = make_efficient(obj)
+        return new_obj, _SNIPPET_DYNAMIC_QUANT_FALLBACK
+    try:
+        qmodel = torch.quantization.quantize_dynamic(
+            copy.deepcopy(module).eval(),
+            {torch.nn.Linear},
+            dtype=torch.qint8,
+        )
+        return qmodel, _SNIPPET_DYNAMIC_QUANT
+    except Exception:
+        new_obj, _ = make_efficient(obj)
+        return new_obj, _SNIPPET_DYNAMIC_QUANT_FALLBACK
+
+
+_SNIPPET_DYNAMIC_QUANT = Snippet(
+    title="Dynamic INT8 quantization (Linear layers)",
+    summary="The canonical Mini_Quantization recipe -- shrinks Linear layers to INT8 at runtime.",
+    notebook="Mini_Quantization.ipynb",
+    code=(
+        "import torch.quantization\n"
+        "\n"
+        "quantized_model = torch.quantization.quantize_dynamic(\n"
+        "    model,\n"
+        "    {torch.nn.Linear},\n"
+        "    dtype=torch.qint8,\n"
+        ")\n"
+    ),
+)
+
+_SNIPPET_DYNAMIC_QUANT_FALLBACK = Snippet(
+    title="Half-precision (fallback)",
+    summary="Dynamic INT8 needs the full module -- on a state-dict we apply half-precision instead.",
+    notebook="Mini_Quantization.ipynb",
+    code=(
+        "# Static-only fallback: half-precision keeps the same\n"
+        "# memory savings without needing a forward pass.\n"
+        "model = model.half()\n"
+    ),
+)
+
+
+def make_lean(obj: Any, ratio: float = 0.3) -> tuple[Any, Snippet]:
+    """L1 unstructured pruning at ``ratio`` -- the canonical Mini_Pruning
+    recipe.  Uses ``torch.nn.utils.prune.l1_unstructured`` when we have a
+    full module; falls back to manual magnitude masking on state-dicts."""
+    module, _err = _ensure_module(obj)
+    if module is not None:
+        try:
+            import torch.nn.utils.prune as prune
+
+            new_module = copy.deepcopy(module)
+            for m in new_module.modules():
+                if isinstance(m, (nn.Linear, nn.Conv1d, nn.Conv2d, nn.Conv3d)):
+                    prune.l1_unstructured(m, "weight", amount=ratio)
+                    prune.remove(m, "weight")
+            return new_module, _SNIPPET_PRUNE
+        except Exception:
+            pass
+
+    # Manual fallback for state-dicts: zero out the smallest |w| per tensor.
+    sd, kind = _state_dict_copy(obj)
     if kind == "unknown":
-        return obj, _SNIPPET_LEAN
+        return obj, _SNIPPET_PRUNE
     for k, v in list(sd.items()):
         if (
             isinstance(v, torch.Tensor)
@@ -119,125 +198,237 @@ def make_lean(obj: Any, ratio: float = 0.5) -> tuple[Any, Snippet]:
                 continue
             threshold = torch.kthvalue(v.abs().flatten(), n_zero).values
             sd[k] = v * (v.abs() > threshold).to(v.dtype)
-    return _rebuild(obj, sd, kind), _SNIPPET_LEAN
+    return _rebuild(obj, sd, kind), _SNIPPET_PRUNE
 
 
-_SNIPPET_LEAN = Snippet(
-    title="Drop the smallest 50% of weights in every layer",
-    summary="Cut the weights that contribute the least. Real teams fine-tune afterwards to recover the last bit of accuracy.",
+_SNIPPET_PRUNE = Snippet(
+    title="L1 unstructured pruning",
+    summary="The Mini_Pruning recipe -- zero out the lowest-magnitude weights, layer by layer. Fine-tune afterwards to recover.",
     notebook="Mini_Pruning.ipynb",
     code=(
-        "import torch\n"
+        "import torch.nn.utils.prune as prune\n"
         "\n"
-        "# For every 2D+ weight tensor, zero out the smallest 50% by\n"
-        "# magnitude. In production you'd fine-tune for a few epochs\n"
-        "# afterwards to recover accuracy.\n"
-        "state_dict = torch.load('model.pt')\n"
-        "for k, v in state_dict.items():\n"
-        "    if v.dim() >= 2 and v.is_floating_point():\n"
-        "        n = int(0.5 * v.numel())\n"
-        "        threshold = torch.kthvalue(v.abs().flatten(), n).values\n"
-        "        state_dict[k] = v * (v.abs() > threshold).to(v.dtype)\n"
-        "torch.save(state_dict, 'model_pruned.pt')\n"
+        "for module in model.modules():\n"
+        "    if isinstance(module, (torch.nn.Linear,\n"
+        "                            torch.nn.Conv2d)):\n"
+        "        prune.l1_unstructured(module, 'weight', amount=0.3)\n"
+        "        prune.remove(module, 'weight')\n"
+    ),
+)
+
+
+def make_structured_pruned(obj: Any, ratio: float = 0.3) -> tuple[Any, Snippet]:
+    """L1 structured pruning -- removes whole channels / neurons.
+    Course recipe from Mini_Pruning.ipynb."""
+    module, err = _ensure_module(obj)
+    if module is None:
+        return obj, _SNIPPET_PRUNE_STRUCT
+    try:
+        import torch.nn.utils.prune as prune
+
+        new_module = copy.deepcopy(module)
+        for m in new_module.modules():
+            if isinstance(m, (nn.Linear, nn.Conv2d)):
+                prune.ln_structured(m, "weight", amount=ratio, n=1, dim=0)
+                prune.remove(m, "weight")
+        return new_module, _SNIPPET_PRUNE_STRUCT
+    except Exception:
+        return obj, _SNIPPET_PRUNE_STRUCT
+
+
+_SNIPPET_PRUNE_STRUCT = Snippet(
+    title="L1 structured pruning (channel-level)",
+    summary="Removes whole output channels / neurons. More aggressive than unstructured -- and the speedup actually shows up on hardware.",
+    notebook="Mini_Pruning.ipynb",
+    code=(
+        "import torch.nn.utils.prune as prune\n"
+        "\n"
+        "for module in model.modules():\n"
+        "    if isinstance(module, (torch.nn.Linear,\n"
+        "                            torch.nn.Conv2d)):\n"
+        "        prune.ln_structured(\n"
+        "            module, 'weight', amount=0.3, n=1, dim=0,\n"
+        "        )\n"
+        "        prune.remove(module, 'weight')\n"
     ),
 )
 
 
 def make_compact(obj: Any) -> tuple[Any, Snippet]:
-    """Apply both efficiency (FP16) and leanness (50% prune) for the
-    one-shot 'make this lighter' button."""
+    """Stack half-precision + L1 pruning."""
     obj, _ = make_efficient(obj)
-    obj, _ = make_lean(obj, ratio=0.5)
+    obj, _ = make_lean(obj, ratio=0.3)
     return obj, _SNIPPET_COMPACT
 
 
 _SNIPPET_COMPACT = Snippet(
-    title="Combine half precision + pruning",
-    summary="Stacking the two cheapest moves. Roughly a quarter of the original carry weight, with one fine-tune pass to recover.",
-    notebook="Knowledge_Distillation.ipynb",
+    title="Half precision + L1 pruning, stacked",
+    summary="The two cheapest moves combined. Roughly a quarter of the original carry weight after a short fine-tune to recover.",
+    notebook="Mini_Pruning.ipynb",
     code=(
-        "import torch\n"
+        "import torch.nn.utils.prune as prune\n"
         "\n"
-        "# Stack the two cheapest deployment moves: FP16 + 50% pruning.\n"
-        "state_dict = torch.load('model.pt')\n"
-        "for k, v in state_dict.items():\n"
-        "    if not v.is_floating_point():\n"
-        "        continue\n"
-        "    if v.dim() >= 2:\n"
-        "        n = int(0.5 * v.numel())\n"
-        "        threshold = torch.kthvalue(v.abs().flatten(), n).values\n"
-        "        v = v * (v.abs() > threshold).to(v.dtype)\n"
-        "    if v.dtype == torch.float32:\n"
-        "        v = v.half()\n"
-        "    state_dict[k] = v\n"
-        "torch.save(state_dict, 'model_compact.pt')\n"
+        "# Half-precision first.\n"
+        "model = model.half()\n"
+        "\n"
+        "# Then L1 unstructured pruning at 30%.\n"
+        "for module in model.modules():\n"
+        "    if isinstance(module, (torch.nn.Linear,\n"
+        "                            torch.nn.Conv2d)):\n"
+        "        prune.l1_unstructured(module, 'weight', amount=0.3)\n"
+        "        prune.remove(module, 'weight')\n"
     ),
 )
 
 
-def try_export_onnx(obj: Any) -> tuple[Any, Snippet, str | None]:
-    """Attempt a real ONNX export.  Returns ``(unchanged_obj, snippet,
-    error_or_None)``.  This one doesn't transform the model -- it
-    diagnoses whether export would actually work."""
-    err: str | None = None
-    if not isinstance(obj, nn.Module):
-        err = "Need the full nn.Module to attempt a real export."
-        return obj, _SNIPPET_EXPORT, err
+# ---------------------------------------------------------------------------
+# ONNX export -- with auto-loading into torchvision models when possible
+# ---------------------------------------------------------------------------
 
-    import io
-    bio = io.BytesIO()
-    # Sniff a default input shape from the first leaf module.
-    dummy = None
-    for m in obj.modules():
+
+def _guess_dummy_input(module: nn.Module) -> torch.Tensor | None:
+    """Sniff a plausible dummy tensor from the first leaf module."""
+    for m in module.modules():
         if list(m.children()):
             continue
         if isinstance(m, nn.Conv2d):
-            dummy = torch.randn(1, m.in_channels, 224, 224)
-            break
+            return torch.randn(1, m.in_channels, 224, 224)
+        if isinstance(m, nn.Conv1d):
+            return torch.randn(1, m.in_channels, 1024)
+        if isinstance(m, nn.Conv3d):
+            return torch.randn(1, m.in_channels, 16, 64, 64)
         if isinstance(m, nn.Linear):
-            dummy = torch.randn(1, m.in_features)
-            break
+            return torch.randn(1, m.in_features)
+        if isinstance(m, nn.Embedding):
+            return torch.randint(0, 100, (1, 64), dtype=torch.long)
+    return None
+
+
+def try_export_onnx(obj: Any) -> tuple[Any, Snippet, str | None]:
+    """Attempt a real ONNX export.  Auto-loads state-dicts into the matching
+    torchvision model when the architecture is recognised.
+
+    Returns ``(unchanged_obj, snippet, error_or_None)``.  No transformation
+    is applied -- this just diagnoses whether export would actually work.
+    """
+    module, err = _ensure_module(obj)
+    if module is None:
+        return obj, _SNIPPET_ONNX, err
+
+    dummy = _guess_dummy_input(module)
     if dummy is None:
-        return obj, _SNIPPET_EXPORT, "Couldn't infer an input shape."
+        return obj, _SNIPPET_ONNX, "Couldn't infer a plausible input shape."
 
-    try:
-        torch.onnx.export(
-            obj.eval(), dummy, bio,
-            opset_version=17, do_constant_folding=True,
-            input_names=["input"], output_names=["output"],
-        )
-        return obj, _SNIPPET_EXPORT, None
-    except TypeError:
-        # Older torch without dynamo kwarg -- retry without it.
+    common = dict(
+        opset_version=17,
+        do_constant_folding=True,
+        input_names=["input"],
+        output_names=["output"],
+        dynamic_axes={"input": {0: "batch"}, "output": {0: "batch"}},
+    )
+    bio = io.BytesIO()
+    last_err = None
+    for kwargs in ({"dynamo": False, **common}, common):
         try:
-            torch.onnx.export(
-                obj.eval(), dummy, bio,
-                opset_version=17, do_constant_folding=True,
-            )
-            return obj, _SNIPPET_EXPORT, None
+            torch.onnx.export(module.eval(), dummy, bio, **kwargs)
+            return obj, _SNIPPET_ONNX, None
+        except TypeError as exc:
+            # ``dynamo`` kwarg unsupported -- retry without it.
+            last_err = str(exc).splitlines()[0][:200]
+            continue
         except Exception as exc:
-            return obj, _SNIPPET_EXPORT, str(exc).splitlines()[0][:200]
-    except Exception as exc:
-        return obj, _SNIPPET_EXPORT, str(exc).splitlines()[0][:200]
+            last_err = str(exc).splitlines()[0][:200]
+            break
+    return obj, _SNIPPET_ONNX, last_err
 
 
-_SNIPPET_EXPORT = Snippet(
-    title="Export to ONNX -- the universal deployment format",
-    summary="The first runtime step every deployment team takes. Whether it works tells you a lot about how the rest of the journey will go.",
+_SNIPPET_ONNX = Snippet(
+    title="ONNX export -- the universal deployment format",
+    summary="The first runtime step every deployment team takes. Whether it works tells you a lot about the rest of the journey.",
     notebook="deployment-starter-kit (1).ipynb",
     code=(
-        "import torch\n"
-        "\n"
-        "model.eval()\n"
-        "dummy = torch.randn(1, 3, 224, 224)  # match your model's input\n"
         "torch.onnx.export(\n"
-        "    model, dummy, 'model.onnx',\n"
-        "    opset_version=17,\n"
-        "    do_constant_folding=True,\n"
+        "    model,\n"
+        "    input_tensor,\n"
+        "    'model.onnx',\n"
         "    input_names=['input'],\n"
         "    output_names=['output'],\n"
-        "    dynamic_axes={'input': {0: 'batch'},\n"
-        "                  'output': {0: 'batch'}},\n"
+        "    opset_version=17,\n"
+        "    dynamic_axes={'input':  {0: 'batch_size'},\n"
+        "                  'output': {0: 'batch_size'}},\n"
         ")\n"
     ),
 )
+
+
+# ---------------------------------------------------------------------------
+# Catalog -- exposed to the UI for the Optimization tab
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class TechniqueOption:
+    key: str
+    label: str
+    description: str
+    notebook: str
+    apply: callable     # callable(obj) -> (new_obj, Snippet) or (obj, Snippet, err)
+
+
+TECHNIQUES: list[TechniqueOption] = [
+    TechniqueOption(
+        key="half",
+        label="Half precision",
+        description=(
+            "Cast every weight from 32-bit to 16-bit floats. "
+            "Half the memory, half the bandwidth, the same accuracy "
+            "for almost every inference workload."
+        ),
+        notebook="Mini_Quantization.ipynb",
+        apply=make_efficient,
+    ),
+    TechniqueOption(
+        key="dynamic_quant",
+        label="Dynamic INT8 quantization",
+        description=(
+            "Convert Linear layers from 32-bit floats to 8-bit integers "
+            "at runtime. The fastest production-grade move on CPU "
+            "transformer / classifier inference."
+        ),
+        notebook="Mini_Quantization.ipynb",
+        apply=make_dynamic_quantized,
+    ),
+    TechniqueOption(
+        key="prune_unstructured",
+        label="L1 unstructured pruning (30%)",
+        description=(
+            "Set the lowest-magnitude 30% of weights to zero in every "
+            "layer. Doesn't speed up inference on its own -- but "
+            "compresses well and stacks with quantization."
+        ),
+        notebook="Mini_Pruning.ipynb",
+        apply=make_lean,
+    ),
+    TechniqueOption(
+        key="prune_structured",
+        label="L1 structured pruning (30%)",
+        description=(
+            "Remove entire output channels or neurons by their L1 norm. "
+            "Aggressive -- needs fine-tuning -- but the speedup actually "
+            "shows up on hardware."
+        ),
+        notebook="Mini_Pruning.ipynb",
+        apply=make_structured_pruned,
+    ),
+    TechniqueOption(
+        key="stack",
+        label="Half precision + 30% pruning (stacked)",
+        description=(
+            "The two cheapest moves combined: half precision plus "
+            "magnitude pruning. Roughly a quarter of the original "
+            "carry weight after a short fine-tune."
+        ),
+        notebook="Mini_Pruning.ipynb",
+        apply=make_compact,
+    ),
+]

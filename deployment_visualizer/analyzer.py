@@ -145,8 +145,11 @@ def _iter_tensors(obj: Any) -> list[tuple[str, torch.Tensor]]:
         if isinstance(node, torch.Tensor):
             out.append((prefix or "tensor", node))
         elif isinstance(node, nn.Module):
+            # Quantized modules' state_dicts contain non-tensor entries
+            # (dtypes, packed-param wrappers, etc.) -- filter them out.
             for name, p in node.state_dict().items():
-                out.append((f"{prefix}.{name}" if prefix else name, p))
+                if isinstance(p, torch.Tensor):
+                    out.append((f"{prefix}.{name}" if prefix else name, p))
         elif isinstance(node, (dict, OrderedDict)):
             for k, v in node.items():
                 walk(f"{prefix}.{k}" if prefix else str(k), v)
