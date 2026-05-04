@@ -48,9 +48,12 @@ def _fmt_ms(ms: float) -> str:
 
 
 def _verdict(latency_ms: float, budget_ms: float) -> tuple[str, str]:
-    if latency_ms <= budget_ms:
+    """Strict thresholds: 'Ships.' requires real margin, not just hitting
+    the exact budget.  Hitting the budget exactly is 'Tight.' because by
+    the time you ship the rest of the stack you'll blow past it."""
+    if latency_ms <= budget_ms * 0.5:
         return "Ships.", "good"
-    if latency_ms <= budget_ms * 1.6:
+    if latency_ms <= budget_ms:
         return "Tight.", "warning"
     return "Won't ship.", "critical"
 

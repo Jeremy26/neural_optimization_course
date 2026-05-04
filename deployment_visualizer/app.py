@@ -8,7 +8,6 @@ Run with:
 from __future__ import annotations
 
 import hashlib
-import os
 
 import pandas as pd
 import plotly.express as px
@@ -19,7 +18,6 @@ from analyzer import analyze
 from compatibility import compute_compatibility
 from problems import detect_problems
 from scenarios import build_scenarios
-import viz
 
 
 COURSE_URL = "https://www.thinkautonomous.ai/"
@@ -333,16 +331,12 @@ with hero_right:
     st.markdown("**Weaknesses & Opportunities**")
     for rec in report.recommendations:
         st.markdown(f"- {rec}")
-    st.caption(
-        "Spotted the gap? The course teaches you how to close it -- see "
-        "the panel on the left."
-    )
 
 # ---------------------------------------------------------------------------
 # Network at a glance -- the by-the-numbers panel
 # ---------------------------------------------------------------------------
 
-from device_estimates import network_stats, estimate_latency_ms  # noqa: E402
+from device_estimates import network_stats  # noqa: E402
 
 stats = network_stats(ss["obj"])
 
@@ -414,51 +408,32 @@ with kind_right:
         )
 
 # ---------------------------------------------------------------------------
-# Device latency estimate -- compute statically on FLOPs (when available).
+# Category breakdown -- the four scoring axes
 # ---------------------------------------------------------------------------
 
-flops = report.estimated_flops
-if flops:
-    st.markdown("#### Estimated latency on common targets")
-    st.caption(
-        f"Based on ~{flops / 1e9:.2f} GFLOPs (estimated from "
-        f"{report.parameter_count / 1e6:.1f}M params, "
-        f"{report.architecture or 'generic'} ratio). "
-        "Real batch=1 latency typically runs 2-5x slower than peak-FLOPS theoretical."
+st.markdown("### Category breakdown")
+cols = st.columns(4)
+with cols[0]:
+    _score_card(
+        "Memory footprint", report.precision.score, report.precision.verdict
     )
-    dtype_choice = st.radio(
-        "Inference precision",
-        options=["fp32", "fp16", "int8"],
-        format_func=lambda d: d.upper(),
-        index=1,
-        horizontal=True,
-        key="latency_dtype",
+with cols[1]:
+    _score_card("Sparsity", report.pruning.score, report.pruning.verdict)
+with cols[2]:
+    _score_card("File size", report.size.score, report.size.verdict)
+with cols[3]:
+    _score_card(
+        "Exportability", report.exportability.score, report.exportability.verdict
     )
-    rows = estimate_latency_ms(flops, dtype=dtype_choice)
-    df = pd.DataFrame(rows)
-    df["latency"] = df["latency_ms"].map(
-        lambda x: f"{x:.2f} ms" if x >= 0.5 else f"{x*1000:.0f} µs"
-    )
-    df["throughput"] = df["throughput_per_s"].map(
-        lambda x: f"{x:,.0f} /s" if x < 1e5 else f"{x/1000:,.0f}k /s"
-    )
-    df["peak"] = df.apply(
-        lambda r: f"{r['peak_tflops']:.0f} {'TOPS' if dtype_choice == 'int8' else 'TFLOPS'}",
-        axis=1,
-    )
-    df["efficiency"] = df["efficiency"].map(lambda x: f"{x:.0%}")
-    st.dataframe(
-        df[["device", "peak", "efficiency", "latency", "throughput"]],
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "device": "Target",
-            "peak": "Peak",
-            "efficiency": "Realistic eff.",
-            "latency": "Per forward",
-            "throughput": "Throughput",
-        },
-    )
+
+# ---------------------------------------------------------------------------
+# Problems detected -- damning quantified callouts
+# ---------------------------------------------------------------------------
+
+st.markdown("### Problems detected")
+problems = detect_problems(report)
+for p in problems:
+    _problem_callout(p)
 
 # ---------------------------------------------------------------------------
 # Deployment compatibility -- runtime-by-runtime readiness
@@ -466,8 +441,8 @@ if flops:
 
 st.markdown("### Deployment compatibility")
 st.caption(
-    "Each runtime is its own world: ONNX, TensorRT, CUDA FP16, INT8 quant, "
-    "Jetson DLA, Apple CoreML. Here's how your model would land on each."
+    "Each runtime is its own world. Here's how your model lands on each, "
+    "given its current state -- not its theoretical ceiling."
 )
 families = compute_compatibility(report)
 fam_cols = st.columns(3)
@@ -536,222 +511,6 @@ for i, scen in enumerate(scenarios):
             unsafe_allow_html=True,
         )
 
-
-# ---------------------------------------------------------------------------
-# Problems detected -- damning quantified callouts
-# ---------------------------------------------------------------------------
-
-st.markdown("### Problems detected")
-problems = detect_problems(report)
-for p in problems:
-    _problem_callout(p)
-
-# ---------------------------------------------------------------------------
-# Category breakdown
-# ---------------------------------------------------------------------------
-
-st.markdown("### Category breakdown")
-cols = st.columns(4)
-with cols[0]:
-    _score_card("Precision", report.precision.score, report.precision.verdict)
-with cols[1]:
-    _score_card("Pruning", report.pruning.score, report.pruning.verdict)
-with cols[2]:
-    _score_card("Size", report.size.score, report.size.verdict)
-with cols[3]:
-    _score_card(
-        "Exportability", report.exportability.score, report.exportability.verdict
-    )
-
-# ---------------------------------------------------------------------------
-# Inside your model -- visualizations
-# ---------------------------------------------------------------------------
-
-st.markdown("### Where you're leaking performance")
-st.caption(
-    "Each rectangle is a parameter tensor sized by its share of total weight. "
-    "Big boxes are big targets -- the layers you'd hit first if you were "
-    "serious about shipping this model."
-)
-
-obj = ss.get("obj")
-
-# 1. Architecture treemap -- one glance: which modules eat your parameter budget?
-tree = viz.module_tree(obj)
-# Plotly renders nothing if the only node is the synthetic root with 0 params.
-has_real_nodes = any(r["params"] > 0 and r["id"] != "model" for r in tree)
-if tree and has_real_nodes:
-    df = pd.DataFrame(tree)
-    fig = go.Figure(go.Treemap(
-        ids=df["id"],
-        labels=df["label"],
-        parents=df["parent"],
-        values=df["params"],
-        # "remainder" lets parents have value 0 while showing children inside,
-        # which is what we want -- intermediate paths like "net.layer1" carry
-        # no params of their own, only the leaves do.
-        branchvalues="remainder",
-        hovertemplate="<b>%{label}</b><br>%{value:,} params<extra></extra>",
-        marker=dict(
-            colors=df["params"],
-            colorscale="Tealgrn",
-            showscale=False,
-            line=dict(width=1, color="rgba(15,23,42,0.4)"),
-        ),
-        textfont=dict(size=13),
-    ))
-    fig.update_layout(
-        height=460,
-        margin=dict(t=10, b=10, l=10, r=10),
-        paper_bgcolor="rgba(0,0,0,0)",
-    )
-    st.plotly_chart(fig, use_container_width=True)
-else:
-    st.info(
-        "Treemap unavailable -- couldn't find tensor data at the top level "
-        "of this checkpoint. If your file is a wrapper like "
-        "``{'state_dict': ..., 'optimizer': ...}`` we usually unwrap it "
-        "automatically; let us know if your structure is different."
-    )
-
-# 2. Two-column visual breakdown
-viz_left, viz_right = st.columns(2)
-
-with viz_left:
-    st.markdown("#### Where your parameters live")
-    layers = viz.per_layer_costs(obj)
-    if layers:
-        total_params = sum(l["params"] for l in layers)
-        top_layers = layers[:15]
-        top3_share = sum(l["params"] for l in layers[:3]) / max(total_params, 1)
-        # Find the "fat" prefix -- e.g. all of net.layer4.* if that branch
-        # dominates the param count.  Group by 3-deep prefix.
-        from collections import defaultdict as _dd
-        prefix_share = _dd(int)
-        for l in layers:
-            parts = l["name"].split(".")
-            prefix = ".".join(parts[: min(3, len(parts) - 1)]) if len(parts) > 1 else l["name"]
-            prefix_share[prefix] += l["params"]
-        biggest_prefix, biggest_share = max(
-            prefix_share.items(), key=lambda kv: kv[1]
-        )
-        biggest_pct = biggest_share / max(total_params, 1)
-        st.markdown(
-            f"**Top 3 layers = {top3_share:.0%} of all parameters.** "
-            f"Branch ``{biggest_prefix}.*`` alone holds {biggest_pct:.0%} -- "
-            "the highest-impact pruning target."
-        )
-
-        df = pd.DataFrame(top_layers)
-        df["share"] = df["params"] / max(total_params, 1)
-        df["short_name"] = df["name"].apply(
-            lambda s: s if len(s) <= 32 else "..." + s[-29:]
-        )
-        fig = px.bar(
-            df,
-            x="params", y="short_name", color="type",
-            orientation="h",
-            text=df["share"].map(lambda x: f"{x:.1%}"),
-            hover_data={
-                "name": True, "short_name": False,
-                "params": ":,", "type": True, "share": ":.1%",
-            },
-            labels={"params": "Parameters", "short_name": "", "type": "Module"},
-        )
-        fig.update_traces(textposition="outside", cliponaxis=False)
-        fig.update_layout(
-            height=460, margin=dict(t=10, b=40, l=10, r=40),
-            yaxis=dict(autorange="reversed"),
-            legend=dict(orientation="h", y=-0.18),
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("No layer-level parameter data found in this checkpoint.")
-
-with viz_right:
-    st.markdown("#### Weight distributions & prunability")
-    hists = viz.weight_histograms(obj)
-    if hists:
-        st.caption(
-            "For each layer: the share of weights below 1% of the layer's "
-            "max magnitude (the dashed line). That's roughly how much you "
-            "can prune with magnitude pruning before retraining."
-        )
-        for h in hists:
-            edges = h["bin_edges"]
-            counts = h["counts"]
-            centers = [(edges[i] + edges[i+1]) / 2 for i in range(len(counts))]
-            threshold = h["max_abs"] * 0.01
-            below = sum(c for c, e in zip(counts, edges[:-1]) if e < threshold)
-            below_pct = below / max(sum(counts), 1)
-            short = h["name"] if len(h["name"]) <= 40 else "..." + h["name"][-37:]
-            fig = go.Figure(go.Bar(
-                x=centers, y=counts,
-                marker=dict(color="#38bdf8"),
-                hovertemplate="|w|=%{x:.4f}<br>count=%{y:,}<extra></extra>",
-            ))
-            fig.add_vline(
-                x=threshold, line_dash="dash", line_color="#f59e0b",
-                annotation_text=f"{below_pct:.0%} below",
-                annotation_position="top right",
-                annotation_font_color="#f59e0b",
-            )
-            fig.update_layout(
-                title=dict(
-                    text=(
-                        f"{short}  ·  shape={tuple(h['shape'])}  ·  "
-                        f"<span style='color:#f59e0b'>"
-                        f"{below_pct:.0%} prunable</span>"
-                    ),
-                    font=dict(size=12),
-                ),
-                height=200,
-                margin=dict(t=36, b=24, l=10, r=10),
-                xaxis_title="|weight|",
-                yaxis_title=None,
-                bargap=0.0,
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(15,23,42,0.04)",
-                showlegend=False,
-            )
-            st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("No 2D+ weight tensors to plot.")
-
-# 3. Compact module-class composition + dtype mix as side-by-side donuts.
-mix_left, mix_right = st.columns(2)
-
-with mix_left:
-    classes = report.exportability.details.get("module_classes", {})
-    if classes:
-        st.markdown("#### Module class mix")
-        cdf = pd.DataFrame(
-            [(k, v) for k, v in classes.items()], columns=["class", "count"]
-        )
-        fig = px.pie(
-            cdf, values="count", names="class", hole=0.55,
-            color_discrete_sequence=px.colors.sequential.Teal,
-        )
-        fig.update_layout(height=320, margin=dict(t=10, b=10),
-                          showlegend=True,
-                          legend=dict(orientation="v", x=1.02, y=0.5))
-        st.plotly_chart(fig, use_container_width=True)
-
-with mix_right:
-    dist = report.precision.details.get("dtype_distribution", {})
-    if dist:
-        st.markdown("#### Precision mix")
-        ddf = pd.DataFrame(
-            [(k, v) for k, v in dist.items()], columns=["dtype", "elements"]
-        )
-        fig = px.pie(
-            ddf, values="elements", names="dtype", hole=0.55,
-            color_discrete_sequence=px.colors.sequential.Sunset,
-        )
-        fig.update_layout(height=320, margin=dict(t=10, b=10),
-                          showlegend=True,
-                          legend=dict(orientation="v", x=1.02, y=0.5))
-        st.plotly_chart(fig, use_container_width=True)
 
 st.divider()
 st.markdown(

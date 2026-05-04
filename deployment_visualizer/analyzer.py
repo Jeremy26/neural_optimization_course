@@ -204,16 +204,15 @@ def _check_precision(tensors: list[tuple[str, torch.Tensor]]) -> CategoryReport:
 
     dominant = max(dtype_counts.items(), key=lambda kv: kv[1])[0]
     if score >= 90:
-        verdict = f"Already quantized ({dominant})."
+        verdict = f"Already at low precision ({dominant})."
     elif score >= 60:
-        verdict = f"Half precision ({dominant}) -- good for GPU inference."
+        verdict = f"Half precision ({dominant})."
     elif score >= 25:
         verdict = (
-            f"Full precision ({dominant}). Quantization to FP16/INT8 could cut "
-            "size by 2-4x with minimal accuracy loss."
+            f"Full precision ({dominant}). 4 bytes per weight, every weight."
         )
     else:
-        verdict = f"Double precision ({dominant}) -- almost always overkill."
+        verdict = f"Double precision ({dominant}). 8 bytes per weight."
 
     return CategoryReport(
         score=score,
@@ -282,22 +281,16 @@ def _check_pruning(tensors: list[tuple[str, torch.Tensor]]) -> CategoryReport:
         score = max(15.0, score + min(20.0, headroom * 50.0))
 
     if sparsity >= 0.5:
-        verdict = f"Already {sparsity:.0%} sparse -- pruning is well-applied."
+        verdict = f"{sparsity:.0%} sparse. Already lean."
     elif sparsity >= 0.05:
-        verdict = (
-            f"Partially pruned ({sparsity:.1%}). Structured pruning could push "
-            "this further."
-        )
+        verdict = f"{sparsity:.1%} sparse. Mostly dense."
     elif headroom >= 0.2:
         verdict = (
-            f"Dense, but {headroom:.0%} of weights are near zero -- magnitude "
-            "pruning is a low-risk win."
+            f"Fully dense -- but {headroom:.0%} of weights sit near zero, "
+            "doing nothing."
         )
     else:
-        verdict = (
-            "Dense model with little obvious headroom. Try iterative magnitude "
-            "pruning or movement pruning."
-        )
+        verdict = "Fully dense. Every weight occupies space and FLOPs."
 
     # Sort layers by headroom for the UI to surface biggest offenders.
     per_layer.sort(key=lambda d: d["near_zero_fraction"], reverse=True)
@@ -421,30 +414,30 @@ def _build_recommendations(
     size: CategoryReport,
     exportability: CategoryReport,
 ) -> list[str]:
+    """Problem statements only -- no how-to.  Names the gap, lets the user
+    feel the gap, points them to the course for the fix."""
     recs: list[str] = []
     if precision.score < 60:
         recs.append(
-            "Weights are at full precision -- there's a 2-4x size and latency "
-            "win sitting in quantization, but choosing FP16 vs INT8 (and PTQ "
-            "vs QAT) is where most teams trip up."
+            "Your weights are at full precision -- the model is several "
+            "times larger and slower than it has any reason to be."
         )
     if pruning.score < 50:
         headroom = pruning.details.get("near_zero_headroom", 0.0)
         if headroom > 0.15:
             recs.append(
-                f"~{headroom:.0%} of weights are effectively zero. Real "
-                "savings need the right pruning schedule + fine-tune recipe."
+                f"~{headroom:.0%} of your weights aren't doing useful work. "
+                "You're paying memory and compute to multiply by noise."
             )
         else:
             recs.append(
-                "Magnitude pruning headroom is limited. Structured "
-                "(channel / head) pruning could still help -- but it requires "
-                "architecture-aware techniques."
+                "The model is fully dense -- every layer carries its full "
+                "parameter weight at every inference."
             )
     if size.score < 60:
         recs.append(
-            "Artifact is large for production deployment. Quantization plus "
-            "distillation into a smaller student is the proven combo."
+            "The artifact is large enough to add real friction to deployment "
+            "-- cold starts, downloads, and on-device install size all suffer."
         )
     risky_count = (
         exportability.details.get("onnx_risky_modules", 0)
@@ -452,13 +445,13 @@ def _build_recommendations(
     )
     if exportability.score < 70 and risky_count > 0:
         recs.append(
-            f"{risky_count} layer(s) are likely to fight you on ONNX / "
-            "TensorRT export. Diagnosing and rewriting them is its own skill."
+            f"{risky_count} layer(s) won't behave when you try to ship to "
+            "production runtimes -- the kind of thing teams discover the day "
+            "before the demo."
         )
     if not recs:
         recs.append(
-            "Looks deployment-ready on paper -- but real-hardware benchmarking "
-            "almost always uncovers more headroom."
+            "On paper it's clean. Real hardware is where the surprises live."
         )
     return recs
 
