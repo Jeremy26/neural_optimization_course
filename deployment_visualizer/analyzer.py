@@ -138,18 +138,55 @@ def load_checkpoint(buffer: bytes) -> tuple[Any, str]:
 
 
 def _iter_tensors(obj: Any) -> list[tuple[str, torch.Tensor]]:
-    """Flatten a checkpoint into a list of ``(name, tensor)`` pairs."""
+    """Flatten a checkpoint into a list of ``(name, tensor)`` pairs.
+
+    For dynamically quantized modules, the state-dict carries packed-param
+    wrappers that don't show up as tensors -- which made the analyzer lose
+    sight of INT8 weights after the user applied dynamic quantization.  We
+    inspect the modules directly to extract the underlying packed INT8
+    tensor when present."""
     out: list[tuple[str, torch.Tensor]] = []
+
+    _QDTYPES = {torch.qint8, torch.quint8, getattr(torch, "qint32", None)}
 
     def walk(prefix: str, node: Any) -> None:
         if isinstance(node, torch.Tensor):
             out.append((prefix or "tensor", node))
         elif isinstance(node, nn.Module):
-            # Quantized modules' state_dicts contain non-tensor entries
-            # (dtypes, packed-param wrappers, etc.) -- filter them out.
+            # First: walk every submodule and surface a quantized weight
+            # whenever ``module.weight()`` returns a qint8/quint8 tensor.
+            # This is how PyTorch exposes the packed weight on dynamic
+            # quantized layers -- the regular state_dict only carries a
+            # non-tensor wrapper, so the standard scan below misses them.
+            quantized_names: set[str] = set()
+            for name, m in node.named_modules():
+                w = None
+                try:
+                    attr = getattr(m, "weight", None)
+                    if callable(attr):
+                        w = attr()
+                    elif isinstance(attr, torch.Tensor):
+                        w = attr
+                except Exception:
+                    w = None
+                if isinstance(w, torch.Tensor) and w.dtype in _QDTYPES:
+                    full = f"{prefix}.{name}.weight" if prefix else f"{name}.weight"
+                    out.append((full, w))
+                    quantized_names.add(name)
+
+            # Then: walk the regular state-dict, skipping non-tensor
+            # entries (dtype enums, packed-param wrappers) and any
+            # ``_packed_params`` keys whose underlying weight we already
+            # extracted above.
             for name, p in node.state_dict().items():
-                if isinstance(p, torch.Tensor):
-                    out.append((f"{prefix}.{name}" if prefix else name, p))
+                if not isinstance(p, torch.Tensor):
+                    continue
+                if any(
+                    name.startswith(qn + ".") and "_packed_params" in name
+                    for qn in quantized_names
+                ):
+                    continue
+                out.append((f"{prefix}.{name}" if prefix else name, p))
         elif isinstance(node, (dict, OrderedDict)):
             for k, v in node.items():
                 walk(f"{prefix}.{k}" if prefix else str(k), v)
