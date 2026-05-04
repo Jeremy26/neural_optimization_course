@@ -58,25 +58,191 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-      /* Tighten Streamlit's default vertical rhythm */
-      .block-container { padding-top: 2rem; max-width: 1280px; }
-      h1, h2, h3 { letter-spacing: -0.01em; }
+      /* ============= PAGE CHROME ============= */
+      .stApp {
+        background:
+          radial-gradient(1200px 600px at 10% -10%, rgba(245,158,11,0.05), transparent 60%),
+          radial-gradient(1000px 600px at 110% 10%, rgba(34,211,238,0.05), transparent 60%),
+          linear-gradient(180deg, #060914 0%, #0a0f1f 100%);
+        background-attachment: fixed;
+      }
+      .stApp::before {
+        /* Engineering grid paper -- subtle but visible */
+        content: "";
+        position: fixed; inset: 0;
+        background-image:
+          linear-gradient(rgba(148,163,184,0.045) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(148,163,184,0.045) 1px, transparent 1px);
+        background-size: 40px 40px;
+        pointer-events: none;
+        z-index: 0;
+      }
+      .block-container {
+        padding-top: 2rem; max-width: 1320px; position: relative; z-index: 1;
+      }
+
+      /* ============= TYPOGRAPHY ============= */
+      h1, h2, h3, h4 { letter-spacing: -0.01em; }
+      h1 {
+        font-size: 2.4rem; font-weight: 800;
+        background: linear-gradient(90deg, #f8fafc 0%, #cbd5e1 100%);
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        background-clip: text;
+      }
+      h3 {
+        position: relative; padding-left: 14px;
+        font-weight: 700; letter-spacing: .02em;
+      }
+      h3::before {
+        content: ""; position: absolute; left: 0; top: 0.2em; bottom: 0.2em;
+        width: 4px; border-radius: 2px;
+        background: linear-gradient(180deg, #f59e0b 0%, #22d3ee 100%);
+      }
+      h4 {
+        text-transform: uppercase; letter-spacing: .14em;
+        font-size: 0.82rem; color: #94a3b8; font-weight: 700;
+        margin-top: 1.6rem;
+      }
+
+      /* ============= TABS (industrial console look) ============= */
+      .stTabs [data-baseweb="tab-list"] {
+        gap: 4px;
+        border-bottom: 1px solid rgba(148,163,184,0.18);
+        padding-bottom: 0;
+      }
+      .stTabs [data-baseweb="tab"] {
+        height: 52px; padding: 0 22px;
+        background: rgba(15,23,42,0.40);
+        border: 1px solid rgba(148,163,184,0.12);
+        border-bottom: none;
+        border-radius: 8px 8px 0 0;
+        color: #94a3b8; font-weight: 700;
+        letter-spacing: .04em; font-size: 0.95rem;
+        transition: all 0.15s ease;
+      }
+      .stTabs [data-baseweb="tab"]:hover {
+        color: #e2e8f0; background: rgba(15,23,42,0.65);
+      }
+      .stTabs [aria-selected="true"] {
+        color: #f8fafc !important;
+        background: linear-gradient(180deg,
+                                     rgba(245,158,11,0.08),
+                                     rgba(245,158,11,0.02)) !important;
+        border-color: rgba(245,158,11,0.45) !important;
+        border-bottom-color: transparent !important;
+        box-shadow: inset 0 2px 0 #f59e0b;
+      }
+
+      /* ============= CARDS ============= */
       .metric-card {
-        border: 1px solid rgba(148,163,184,0.2);
-        border-radius: 14px;
-        padding: 18px 18px 14px;
-        background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0));
+        border: 1px solid rgba(148,163,184,0.16);
+        border-radius: 12px;
+        padding: 18px 20px 16px;
+        background:
+          linear-gradient(180deg,
+                           rgba(15,23,42,0.70) 0%,
+                           rgba(15,23,42,0.40) 100%);
+        position: relative;
+        backdrop-filter: blur(4px);
+      }
+      .metric-card::before {
+        /* Top corner accent -- like an engineering callout */
+        content: ""; position: absolute; top: 0; left: 18px; right: 18px;
+        height: 1px;
+        background: linear-gradient(90deg,
+                                     transparent,
+                                     rgba(34,211,238,0.40),
+                                     transparent);
       }
       .metric-label {
-        font-size: 0.78rem; color: #94a3b8;
-        text-transform: uppercase; letter-spacing: .08em;
+        font-size: 0.72rem; color: #64748b;
+        text-transform: uppercase; letter-spacing: .14em;
+        font-weight: 700;
       }
-      .metric-value { font-size: 2.0rem; font-weight: 700; line-height: 1.1; }
+      .metric-value { font-size: 2.0rem; font-weight: 800; line-height: 1.1; }
       .metric-sub  { font-size: 0.92rem; color: #cbd5e1; margin-top: 4px; }
+      .score-card  {
+        border-color: rgba(148,163,184,0.20);
+      }
+
+      /* ============= BADGES ============= */
       .arch-badge {
-        display: inline-block; padding: 4px 12px; border-radius: 999px;
-        background: rgba(56,189,248,0.15); color: #38bdf8; font-weight: 600;
-        font-size: 0.85rem; letter-spacing: .04em;
+        display: inline-block; padding: 5px 12px; border-radius: 6px;
+        background: rgba(34,211,238,0.10);
+        border: 1px solid rgba(34,211,238,0.30);
+        color: #67e8f9; font-weight: 700;
+        font-size: 0.78rem; letter-spacing: .06em;
+        margin-right: 6px; margin-bottom: 4px;
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      }
+
+      /* ============= STATUS PILL (top of the page) ============= */
+      .status-pill {
+        display: inline-flex; align-items: center; gap: 8px;
+        padding: 6px 14px; border-radius: 999px;
+        background: rgba(16,185,129,0.10);
+        border: 1px solid rgba(16,185,129,0.35);
+        color: #6ee7b7; font-size: 0.78rem; font-weight: 700;
+        letter-spacing: .12em;
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      }
+      .status-pill::before {
+        content: ""; width: 8px; height: 8px; border-radius: 50%;
+        background: #10b981;
+        box-shadow: 0 0 8px #10b981;
+        animation: pulse 1.6s ease-in-out infinite;
+      }
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.45; }
+      }
+
+      /* ============= BUTTONS ============= */
+      .stButton > button[kind="primary"] {
+        background: linear-gradient(180deg, #f59e0b 0%, #d97706 100%);
+        border: 1px solid #b45309;
+        color: #0c0a09; font-weight: 800;
+        letter-spacing: .04em;
+        text-transform: uppercase; font-size: 0.85rem;
+        box-shadow: 0 1px 0 rgba(255,255,255,0.20) inset,
+                    0 4px 14px rgba(245,158,11,0.30);
+      }
+      .stButton > button[kind="primary"]:hover {
+        background: linear-gradient(180deg, #fbbf24 0%, #f59e0b 100%);
+        box-shadow: 0 1px 0 rgba(255,255,255,0.25) inset,
+                    0 6px 18px rgba(245,158,11,0.45);
+      }
+      .stButton > button[kind="secondary"] {
+        background: rgba(15,23,42,0.70);
+        border: 1px solid rgba(148,163,184,0.30);
+        color: #e2e8f0; font-weight: 700;
+        letter-spacing: .04em; text-transform: uppercase;
+        font-size: 0.82rem;
+      }
+      .stButton > button[kind="secondary"]:hover {
+        border-color: rgba(34,211,238,0.50);
+        color: #67e8f9;
+      }
+      .stDownloadButton > button {
+        background: rgba(34,211,238,0.10);
+        border: 1px solid rgba(34,211,238,0.45);
+        color: #67e8f9; font-weight: 800;
+        letter-spacing: .06em; text-transform: uppercase;
+        font-size: 0.82rem;
+      }
+      .stDownloadButton > button:hover {
+        background: rgba(34,211,238,0.18);
+        color: #f0fdff;
+      }
+
+      /* ============= DIVIDERS / GENERAL ============= */
+      hr { border-color: rgba(148,163,184,0.18); }
+      .stRadio > div { gap: 8px; }
+      [data-testid="stMarkdownContainer"] code {
+        background: rgba(34,211,238,0.10);
+        border: 1px solid rgba(34,211,238,0.25);
+        border-radius: 4px; padding: 1px 6px;
+        color: #67e8f9; font-size: 0.85em;
       }
     </style>
     """,
@@ -217,11 +383,44 @@ def _format_flops(flops: int) -> str:
 # Header
 # ---------------------------------------------------------------------------
 
-st.title("Model Deployment Health Score")
 st.markdown(
-    "Upload a PyTorch checkpoint (`.pt` / `.pth`) for a free deployment audit. "
-    "We tell you what's wrong with your model on the way to a robot, a "
-    "self-driving car, or any other hardware that has to run it for real."
+    """
+    <div style="display:flex;justify-content:space-between;align-items:center;
+                 flex-wrap:wrap;gap:14px;margin-bottom:14px;">
+      <div style="display:flex;align-items:center;gap:14px;">
+        <div style="width:46px;height:46px;border-radius:10px;
+                     background:linear-gradient(135deg,#f59e0b 0%,#22d3ee 100%);
+                     display:flex;align-items:center;justify-content:center;
+                     font-family:ui-monospace,monospace;font-weight:900;
+                     font-size:1.25rem;color:#0c0a09;
+                     box-shadow:0 0 24px rgba(245,158,11,0.25);">
+          ⌬
+        </div>
+        <div>
+          <div style="font-size:0.72rem;letter-spacing:.18em;
+                       color:#94a3b8;font-weight:700;">
+            DEPLOYMENT QUALIFICATION TERMINAL
+          </div>
+          <div style="font-size:1.9rem;font-weight:800;line-height:1.1;
+                       margin-top:2px;
+                       background:linear-gradient(90deg,#f8fafc,#cbd5e1);
+                       -webkit-background-clip:text;
+                       -webkit-text-fill-color:transparent;">
+            Deploy/X &nbsp;·&nbsp; Model Health Audit
+          </div>
+        </div>
+      </div>
+      <div class="status-pill">SYSTEM ONLINE</div>
+    </div>
+    <div style="font-size:0.95rem;color:#cbd5e1;line-height:1.55;
+                 max-width:780px;">
+      Drop a PyTorch checkpoint and we'll tell you what's wrong with it on the
+      way to a robot, a self-driving car, or any hardware that has to run it
+      for real. Then you can <b>fix it in the workshop</b> and walk out with a
+      deploy-grade <code style="color:#67e8f9;">.onnx</code> file.
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
 
 with st.sidebar:
@@ -270,10 +469,8 @@ with st.sidebar:
     )
 
 # ---------------------------------------------------------------------------
-# Upload area + sample model downloader
+# Upload area
 # ---------------------------------------------------------------------------
-
-import demo_models  # noqa: E402
 
 ss = st.session_state
 
@@ -281,72 +478,12 @@ uploaded = st.file_uploader(
     "Drop your `.pt` / `.pth` here", type=["pt", "pth"], accept_multiple_files=False
 )
 
-st.markdown("##### Or try a sample model")
-st.caption(
-    "Public weights, downloaded straight from the original release. "
-    "Cached locally after the first click."
-)
-demo_cols = st.columns(len(demo_models.DEMOS))
-for col, dm in zip(demo_cols, demo_models.DEMOS):
-    cached_label = " · cached" if demo_models.is_cached(dm) else ""
-    with col:
-        st.markdown(
-            f"""
-            <div class="metric-card" style="padding:14px 16px;height:170px;
-                                              display:flex;flex-direction:column;
-                                              justify-content:space-between;">
-              <div>
-                <div class="metric-label">{dm.domain.upper()}</div>
-                <div style="font-size:1.05rem;font-weight:700;
-                             margin:4px 0 6px;">
-                  {dm.name}
-                </div>
-                <div class="metric-sub" style="font-size:0.82rem;
-                                                 color:#94a3b8;">
-                  {dm.one_liner}
-                </div>
-              </div>
-              <div style="font-size:0.72rem;color:#64748b;
-                           margin-top:6px;">
-                ~{dm.size_mb:.0f} MB{cached_label}
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        if st.button(
-            "Use this model",
-            key=f"demo_{dm.key}",
-            use_container_width=True,
-        ):
-            with st.spinner(f"Fetching {dm.name}..."):
-                progress = st.progress(0.0)
-                def _cb(done, total, p=progress):
-                    p.progress(min(1.0, done / total) if total else 0.5)
-                try:
-                    data = demo_models.download(dm, on_progress=_cb)
-                except Exception as exc:  # noqa: BLE001
-                    st.error(str(exc))
-                    st.stop()
-                progress.empty()
-            ss["demo_buffer"] = data
-            ss["demo_name"] = dm.name
-            st.rerun()
-
-# Resolve which buffer we're working with: a freshly uploaded file always wins
-# over a previously-loaded demo, but a demo loaded earlier this session
-# persists across reruns until the user clears it or uploads.
-if uploaded is not None:
-    buffer = uploaded.getvalue()
-    source_label = uploaded.name
-elif "demo_buffer" in ss:
-    buffer = ss["demo_buffer"]
-    source_label = ss.get("demo_name", "demo model")
-else:
-    st.info(
-        "Waiting for a checkpoint -- drop a file above or pick a sample model."
-    )
+if uploaded is None:
+    st.info("Waiting for a checkpoint -- drop a `.pt` or `.pth` file above.")
     st.stop()
+
+buffer = uploaded.getvalue()
+source_label = uploaded.name
 
 st.caption(f"Analyzing: **{source_label}**")
 
@@ -858,25 +995,19 @@ with tab_optimization:
             st.rerun()
 
     with btn_dl:
-        # Always-on download: serialises whatever is currently the working
-        # state, so users can save the optimized model after any chain.
-        import io as _io
-        import torch as _torch
-        try:
-            _bio = _io.BytesIO()
-            _torch.save(opt_obj, _bio)
-            dl_bytes = _bio.getvalue()
-        except Exception:
-            dl_bytes = None
-        st.download_button(
-            "Download .pt",
-            data=dl_bytes or b"",
-            file_name=f"optimized_{source_label}".replace(" ", "_")
-                      .replace("/", "_") + (".pt" if not source_label.endswith(".pt") else ""),
-            disabled=dl_bytes is None,
+        # ONNX export of the current chain.  On success, the .onnx bytes
+        # are stashed in session state and surfaced as a download button
+        # immediately below.
+        if st.button(
+            "Export to ONNX",
             use_container_width=True,
-            help="Save the current optimized chain to disk.",
-        )
+            key="opt_onnx",
+            help="Export the current optimized chain to a real .onnx file.",
+        ):
+            with st.spinner("Tracing the graph..."):
+                _, snippet, err, onnx_bytes = try_export_onnx(opt_obj)
+            ss["onnx_result"] = (snippet, err, onnx_bytes)
+            st.rerun()
 
     # CODE Review -- right under the buttons.
     last = ss.get("last_snippet")
@@ -983,23 +1114,29 @@ with tab_optimization:
             f"{opt_report.file_size_mb:.0f} MB."
         )
 
-    st.markdown("#### Try a real ONNX export")
-    st.caption(
-        "Export the *current chain* to ONNX. This is the first runtime step "
-        "every deployment team takes -- if it fails here, it fails everywhere."
-    )
-    if st.button("Export current chain to ONNX", key="opt_onnx"):
-        with st.spinner("Tracing the graph..."):
-            _, snippet, err = try_export_onnx(opt_obj)
-        ss["onnx_result"] = (snippet, err)
-
+    # ONNX result (if the user has tried Export to ONNX from the button row).
     onnx_result = ss.get("onnx_result")
     if onnx_result:
-        snippet, err = onnx_result
+        snippet, err, onnx_bytes = onnx_result
+        st.markdown("#### ONNX export")
         if err:
             st.error(f"Export failed: {err}")
         else:
-            st.success("Export succeeded -- the model traces cleanly.")
+            mb = (len(onnx_bytes) / (1024 * 1024)) if onnx_bytes else 0
+            st.success(
+                f"Export succeeded -- {mb:.1f} MB of clean ONNX, ready for "
+                "any deployment runtime."
+            )
+            if onnx_bytes:
+                base = source_label.rsplit(".", 1)[0]
+                fname = f"{base}_optimized.onnx".replace(" ", "_").replace("/", "_")
+                st.download_button(
+                    "Download .onnx",
+                    data=onnx_bytes,
+                    file_name=fname,
+                    mime="application/octet-stream",
+                    help="The optimized model in deploy-grade ONNX form.",
+                )
         with st.expander("The course code that does this", expanded=not err):
             st.markdown(f"_{snippet.summary}_")
             st.code(snippet.code, language="python")

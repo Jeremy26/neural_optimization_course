@@ -304,20 +304,21 @@ def _guess_dummy_input(module: nn.Module) -> torch.Tensor | None:
     return None
 
 
-def try_export_onnx(obj: Any) -> tuple[Any, Snippet, str | None]:
+def try_export_onnx(obj: Any) -> tuple[Any, Snippet, str | None, bytes | None]:
     """Attempt a real ONNX export.  Auto-loads state-dicts into the matching
     torchvision model when the architecture is recognised.
 
-    Returns ``(unchanged_obj, snippet, error_or_None)``.  No transformation
-    is applied -- this just diagnoses whether export would actually work.
+    Returns ``(unchanged_obj, snippet, error_or_None, onnx_bytes_or_None)``.
+    The bytes can be wired straight into ``st.download_button`` when the
+    export succeeds.
     """
     module, err = _ensure_module(obj)
     if module is None:
-        return obj, _SNIPPET_ONNX, err
+        return obj, _SNIPPET_ONNX, err, None
 
     dummy = _guess_dummy_input(module)
     if dummy is None:
-        return obj, _SNIPPET_ONNX, "Couldn't infer a plausible input shape."
+        return obj, _SNIPPET_ONNX, "Couldn't infer a plausible input shape.", None
 
     common = dict(
         opset_version=17,
@@ -326,20 +327,19 @@ def try_export_onnx(obj: Any) -> tuple[Any, Snippet, str | None]:
         output_names=["output"],
         dynamic_axes={"input": {0: "batch"}, "output": {0: "batch"}},
     )
-    bio = io.BytesIO()
     last_err = None
     for kwargs in ({"dynamo": False, **common}, common):
+        bio = io.BytesIO()
         try:
             torch.onnx.export(module.eval(), dummy, bio, **kwargs)
-            return obj, _SNIPPET_ONNX, None
+            return obj, _SNIPPET_ONNX, None, bio.getvalue()
         except TypeError as exc:
-            # ``dynamo`` kwarg unsupported -- retry without it.
             last_err = str(exc).splitlines()[0][:200]
             continue
         except Exception as exc:
             last_err = str(exc).splitlines()[0][:200]
             break
-    return obj, _SNIPPET_ONNX, last_err
+    return obj, _SNIPPET_ONNX, last_err, None
 
 
 _SNIPPET_ONNX = Snippet(
