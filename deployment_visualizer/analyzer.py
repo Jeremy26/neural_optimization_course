@@ -204,15 +204,13 @@ def _check_precision(tensors: list[tuple[str, torch.Tensor]]) -> CategoryReport:
 
     dominant = max(dtype_counts.items(), key=lambda kv: kv[1])[0]
     if score >= 90:
-        verdict = f"Already at low precision ({dominant})."
+        verdict = "Already trim. About as light as it gets."
     elif score >= 60:
-        verdict = f"Half precision ({dominant})."
+        verdict = "Half-weight. Modern hardware will run it well."
     elif score >= 25:
-        verdict = (
-            f"Full precision ({dominant}). 4 bytes per weight, every weight."
-        )
+        verdict = "Carries 4x the weight a comparable model would."
     else:
-        verdict = f"Double precision ({dominant}). 8 bytes per weight."
+        verdict = "Hauling 8x what a deploy-grade model carries."
 
     return CategoryReport(
         score=score,
@@ -281,16 +279,15 @@ def _check_pruning(tensors: list[tuple[str, torch.Tensor]]) -> CategoryReport:
         score = max(15.0, score + min(20.0, headroom * 50.0))
 
     if sparsity >= 0.5:
-        verdict = f"{sparsity:.0%} sparse. Already lean."
+        verdict = "Carries only what it uses. Nothing dead inside."
     elif sparsity >= 0.05:
-        verdict = f"{sparsity:.1%} sparse. Mostly dense."
+        verdict = "Some dead weight inside, but mostly active."
     elif headroom >= 0.2:
         verdict = (
-            f"Fully dense -- but {headroom:.0%} of weights sit near zero, "
-            "doing nothing."
+            f"Carrying {headroom:.0%} dead weight on every forward pass."
         )
     else:
-        verdict = "Fully dense. Every weight occupies space and FLOPs."
+        verdict = "Carries every gram on every forward pass."
 
     # Sort layers by headroom for the UI to surface biggest offenders.
     per_layer.sort(key=lambda d: d["near_zero_fraction"], reverse=True)
@@ -336,7 +333,15 @@ def _check_size(
     else:
         readable = f"{param_count:,}"
 
-    verdict = f"{file_size_mb:.1f} MB on disk, ~{readable} parameters."
+    if file_size_mb < 25:
+        size_phrase = "Pocket-sized. Ships anywhere."
+    elif file_size_mb < 100:
+        size_phrase = "Reasonable weight. Will deploy without drama."
+    elif file_size_mb < 500:
+        size_phrase = "Heavy enough to slow your deployment pipeline."
+    else:
+        size_phrase = "Massive. Bandwidth and cold-start nightmare."
+    verdict = f"{file_size_mb:.1f} MB. {size_phrase}"
     return CategoryReport(
         score=score,
         verdict=verdict,
@@ -355,9 +360,7 @@ def _check_exportability(obj: Any) -> CategoryReport:
     if not counts:
         return CategoryReport(
             50.0,
-            "Checkpoint is a state-dict only -- export feasibility depends on "
-            "the model architecture you load it into. ONNX usually works for "
-            "vision/MLP backbones; check ops manually for custom layers.",
+            "Whether it ships depends on the architecture you load it into.",
             details={"is_state_dict": True},
         )
 
@@ -369,24 +372,21 @@ def _check_exportability(obj: Any) -> CategoryReport:
     trt_score = 100.0 - 70.0 * (trt_risky / max(total_modules, 1))
     score = (onnx_score + trt_score) / 2
 
-    verdict_bits = []
-    if onnx_risky == 0:
-        verdict_bits.append("ONNX export: clean path.")
-    else:
-        verdict_bits.append(
-            f"ONNX export: {onnx_risky} layer(s) need attention "
-            "(transformers, RNN cells)."
+    risky_total = onnx_risky + trt_risky
+    if risky_total == 0:
+        verdict = "Should make it through any deployment runtime cleanly."
+    elif risky_total <= 3:
+        verdict = (
+            f"{risky_total} component(s) will resist when you try to ship."
         )
-    if trt_risky == 0:
-        verdict_bits.append("TensorRT: no obvious blockers.")
     else:
-        verdict_bits.append(
-            f"TensorRT: {trt_risky} layer(s) may need plugins or rewrites."
+        verdict = (
+            f"{risky_total} components will fight you at deployment time."
         )
 
     return CategoryReport(
         score=score,
-        verdict=" ".join(verdict_bits),
+        verdict=verdict,
         details={
             "onnx_risky_modules": onnx_risky,
             "tensorrt_risky_modules": trt_risky,
@@ -419,25 +419,24 @@ def _build_recommendations(
     recs: list[str] = []
     if precision.score < 60:
         recs.append(
-            "Your weights are at full precision -- the model is several "
-            "times larger and slower than it has any reason to be."
+            "It's heavier and slower than a deploy-grade model would be."
         )
     if pruning.score < 50:
         headroom = pruning.details.get("near_zero_headroom", 0.0)
         if headroom > 0.15:
             recs.append(
-                f"~{headroom:.0%} of your weights aren't doing useful work. "
-                "You're paying memory and compute to multiply by noise."
+                f"It's hauling roughly {headroom:.0%} dead weight -- "
+                "spending time and energy on parts that aren't doing work."
             )
         else:
             recs.append(
-                "The model is fully dense -- every layer carries its full "
-                "parameter weight at every inference."
+                "It carries its full weight on every inference -- "
+                "no shortcuts, no skipping."
             )
     if size.score < 60:
         recs.append(
-            "The artifact is large enough to add real friction to deployment "
-            "-- cold starts, downloads, and on-device install size all suffer."
+            "It's bulky enough to drag your deployment pipeline -- "
+            "cold-starts, downloads, and install sizes all feel it."
         )
     risky_count = (
         exportability.details.get("onnx_risky_modules", 0)
@@ -445,13 +444,12 @@ def _build_recommendations(
     )
     if exportability.score < 70 and risky_count > 0:
         recs.append(
-            f"{risky_count} layer(s) won't behave when you try to ship to "
-            "production runtimes -- the kind of thing teams discover the day "
-            "before the demo."
+            f"{risky_count} part(s) of it will resist when you try to ship -- "
+            "the kind of thing teams find the day before the demo."
         )
     if not recs:
         recs.append(
-            "On paper it's clean. Real hardware is where the surprises live."
+            "On paper it's clean. The surprises live on real hardware."
         )
     return recs
 

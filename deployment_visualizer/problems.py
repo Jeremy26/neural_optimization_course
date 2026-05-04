@@ -37,17 +37,15 @@ def detect_problems(report) -> list[Problem]:
     fp32_elements = dist.get("torch.float32", 0) + dist.get("torch.float64", 0)
     total_elements = sum(dist.values()) if dist else 0
     if total_elements and fp32_elements / total_elements > 0.9:
-        # Going FP32 -> FP16 halves storage; FP32 -> INT8 quarters it.
-        fp16_savings = bytes_in_mem * 0.5
-        int8_savings = bytes_in_mem * 0.75
+        savings = bytes_in_mem * 0.75
         out.append(Problem(
             severity="critical",
-            headline=f"{_fmt_mb(fp16_savings)} of memory you're shipping for nothing",
+            headline=f"It's hauling {_fmt_mb(savings)} of dead weight",
             detail=(
-                f"{fp32_elements / total_elements:.0%} of your weights are FP32. "
-                f"Half-precision would already free {_fmt_mb(fp16_savings)}; "
-                f"INT8 would free {_fmt_mb(int8_savings)}. Production teams "
-                "stopped shipping FP32 weights years ago."
+                "About three-quarters of what it carries today doesn't need "
+                "to be there. That's bandwidth you're paying for, memory "
+                "you're holding, and latency you're spending -- on every "
+                "single inference."
             ),
         ))
 
@@ -56,14 +54,13 @@ def detect_problems(report) -> list[Problem]:
     sparsity = report.pruning.details.get("global_sparsity", 0.0)
     param_count = report.parameter_count
     if sparsity < 0.05 and headroom > 0.1:
-        dead_weights = int(param_count * headroom)
         out.append(Problem(
             severity="warning",
-            headline=f"{dead_weights:,} weights aren't doing useful work",
+            headline="It multiplies by noise on every forward pass",
             detail=(
-                f"{headroom:.0%} of your weights are below 1% of their layer's "
-                "max magnitude -- statistically indistinguishable from zero. "
-                "You're paying memory and FLOPs to multiply by noise."
+                f"Roughly {headroom:.0%} of what's inside is statistically "
+                "indistinguishable from zero -- but the model still drags it "
+                "through every inference, paying time and energy along the way."
             ),
         ))
 
@@ -72,37 +69,29 @@ def detect_problems(report) -> list[Problem]:
     if top_layers:
         worst = top_layers[0]
         if worst["near_zero_fraction"] > 0.5:
-            short = worst["name"]
-            if len(short) > 50:
-                short = "..." + short[-47:]
             out.append(Problem(
                 severity="warning",
-                headline=(
-                    f"Layer ``{short}``: "
-                    f"{worst['near_zero_fraction']:.0%} of weights are noise"
-                ),
+                headline="One of the largest parts of the model is mostly noise",
                 detail=(
-                    f"This layer has shape {tuple(worst['shape'])} -- one of "
-                    "the largest in your model -- and most of it is dead "
-                    "weight. A real audit would have caught this before "
-                    "training finished."
+                    f"The heaviest single component is {worst['near_zero_fraction']:.0%} "
+                    "dead weight. A real audit would have caught this "
+                    "before training finished."
                 ),
             ))
 
     # ---- Size vs production norms ----------------------------------------
     if report.file_size_mb > 50:
-        # Roughly: FP16 + 50% prune would put a typical model at ~1/4 of FP32.
         target_size = report.file_size_mb * 0.25
         out.append(Problem(
             severity="warning",
             headline=(
-                f"{report.file_size_mb:.0f} MB on disk -- "
-                f"~{target_size:.0f} MB is the realistic target"
+                f"It weighs {report.file_size_mb:.0f} MB. "
+                f"A deploy-grade version of this would be ~{target_size:.0f} MB."
             ),
             detail=(
-                "Comparable architectures ship at a quarter of this size with "
-                "standard quant + prune pipelines. Bandwidth, cold-start, "
-                "and on-device install size all suffer at this weight."
+                "Comparable models ship at a quarter of this weight. The "
+                "difference shows up in bandwidth, cold starts, install "
+                "size -- everywhere your customer feels the model load."
             ),
         ))
 
@@ -113,22 +102,22 @@ def detect_problems(report) -> list[Problem]:
     if onnx_attempt and not onnx_attempt.get("ok"):
         out.append(Problem(
             severity="critical",
-            headline="ONNX export failed on your model",
+            headline="It won't survive the export step",
             detail=(
-                f"Real export attempt produced: ``{onnx_attempt.get('error')}``. "
-                "Most engineers discover this the day before the deadline."
+                "We tried, and it failed. Most teams discover this the day "
+                "before the deadline -- you're discovering it now."
             ),
         ))
     elif onnx_risky + trt_risky > 0:
         out.append(Problem(
             severity="warning",
             headline=(
-                f"{onnx_risky + trt_risky} layer(s) will fight you at export time"
+                f"{onnx_risky + trt_risky} part(s) will resist when you try to ship it"
             ),
             detail=(
-                "Custom attention, RNN cells, and a few other op patterns "
-                "either fail outright on ONNX / TensorRT or fall back to "
-                "slow paths -- with no warning until you're already debugging."
+                "A few components inside either won't translate cleanly to "
+                "production runtimes or will fall back to slow paths -- "
+                "without any warning until you're already debugging."
             ),
         ))
 
@@ -136,11 +125,11 @@ def detect_problems(report) -> list[Problem]:
     if not out:
         out.append(Problem(
             severity="info",
-            headline="Looks clean on the surface -- but real hardware is the test",
+            headline="Looks clean on the surface -- real hardware is the test",
             detail=(
-                "Static analysis can't catch latency cliffs, memory blowups, "
-                "or accuracy drift under quantization. The course covers what "
-                "to measure when a model looks fine but performs poorly."
+                "What you can see here doesn't catch latency cliffs, memory "
+                "blowups, or accuracy drift under deployment. The course "
+                "covers what to measure when a model looks fine but stumbles."
             ),
         ))
 

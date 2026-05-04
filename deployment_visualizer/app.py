@@ -206,10 +206,8 @@ def _format_flops(flops: int) -> str:
 st.title("Model Deployment Health Score")
 st.markdown(
     "Upload a PyTorch checkpoint (`.pt` / `.pth`) for a free deployment audit. "
-    "We inspect precision, pruning headroom, size, and ONNX / TensorRT "
-    "compatibility -- then run **live benchmarks** (latency, FLOPs, real ONNX "
-    "export, quantization & pruning simulations) to tell you exactly what to "
-    "fix."
+    "We tell you what's wrong with your model on the way to a robot, a "
+    "self-driving car, or any other hardware that has to run it for real."
 )
 
 with st.sidebar:
@@ -226,12 +224,12 @@ with st.sidebar:
           </div>
           <div style="font-size:1.15rem;font-weight:700;line-height:1.25;
                        margin-bottom:10px;">
-            Stop shipping FP32 ResNets in 2026.
+            From training engineer to deployment engineer.
           </div>
           <div style="font-size:0.92rem;color:#cbd5e1;line-height:1.55;">
-            This audit shows you <i>what's wrong</i>. The course shows you
-            <b>how to fix it</b> -- quantization, pruning, distillation, and
-            ONNX / TensorRT deployment, end to end, on real models.
+            This audit shows you <i>what's wrong</i>. The course turns you
+            into the engineer who <b>ships</b> -- on real hardware, in real
+            robots and vehicles, end to end.
           </div>
         </div>
         """,
@@ -240,10 +238,10 @@ with st.sidebar:
     st.markdown("")
     st.markdown(
         "**You'll learn to:**\n"
-        "- Cut model size 4x without touching accuracy\n"
+        "- Cut model size 4x without losing accuracy\n"
         "- Hit 2-3x lower latency on the same hardware\n"
-        "- Ship to mobile, edge, and serverless without surprises\n"
-        "- Debug failed ONNX / TensorRT exports like a pro"
+        "- Ship to robots, drones, and edge devices without surprises\n"
+        "- Diagnose models that won't survive deployment"
     )
     st.link_button(
         "Enroll in the course",
@@ -341,66 +339,77 @@ from device_estimates import network_stats  # noqa: E402
 stats = network_stats(ss["obj"])
 
 st.markdown("### Network at a glance")
-m1, m2, m3, m4, m5, m6 = st.columns(6)
+m1, m2, m3, m4 = st.columns(4)
 m1.metric("Parameters", f"{stats.parameter_count / 1e6:.2f}M")
-m2.metric("Weight tensors", f"{stats.weight_tensors}")
-m3.metric("Leaf modules", f"{stats.leaf_modules}")
-m4.metric("FP32 footprint", f"{stats.fp32_mb:.1f} MB")
-m5.metric(
-    "→ FP16",
-    f"{stats.fp16_mb:.1f} MB",
-    delta=f"-{stats.fp32_mb - stats.fp16_mb:.1f} MB",
+m2.metric("Layers", f"{stats.leaf_modules}")
+m3.metric("Carries today", f"{stats.fp32_mb:.0f} MB")
+# Slimmed estimate: a deploy-grade version of the model is roughly 1/4 the
+# weight (combination of low precision + lean parts).
+slim_mb = stats.int8_mb
+m4.metric(
+    "Could carry",
+    f"{slim_mb:.0f} MB",
+    delta=f"-{stats.fp32_mb - slim_mb:.0f} MB",
     delta_color="inverse",
-)
-m6.metric(
-    "→ INT8",
-    f"{stats.int8_mb:.1f} MB",
-    delta=f"-{stats.fp32_mb - stats.int8_mb:.1f} MB",
-    delta_color="inverse",
+    help="A deploy-grade version of this model would weigh roughly a quarter of what it does today.",
 )
 
-# Layer-kind composition: what fraction of params lives in Conv vs Linear vs Norm?
-kind_left, kind_right = st.columns([2, 1])
-with kind_left:
-    if stats.layer_kind_share:
-        kdf = pd.DataFrame(
-            [(k, v) for k, v in stats.layer_kind_share.items()],
-            columns=["kind", "params"],
-        ).sort_values("params", ascending=True)
-        kdf["share"] = kdf["params"] / max(kdf["params"].sum(), 1)
-        fig = px.bar(
-            kdf, y="kind", x="params", orientation="h",
-            text=kdf["share"].map(lambda x: f"{x:.0%}"),
-            color="kind",
-            labels={"params": "Parameters", "kind": ""},
-        )
-        fig.update_traces(textposition="outside", cliponaxis=False)
-        fig.update_layout(
-            height=210, margin=dict(t=10, b=10, l=10, r=40),
-            showlegend=False,
-            title=dict(text="Where the weight lives by layer kind", font=dict(size=13)),
-        )
-        st.plotly_chart(fig, use_container_width=True)
+# Visual progress bar showing today vs slim, plus the heaviest single component.
+glance_left, glance_right = st.columns([3, 2])
+with glance_left:
+    today_pct = 100
+    slim_pct = max(8, int(slim_mb / max(stats.fp32_mb, 1) * 100))
+    st.markdown(
+        f"""
+        <div class="metric-card" style="height:210px;
+                                          display:flex;flex-direction:column;
+                                          justify-content:center;">
+          <div class="metric-label">Carry weight</div>
+          <div style="margin-top:14px;">
+            <div style="display:flex;justify-content:space-between;
+                         font-size:0.82rem;color:#94a3b8;margin-bottom:4px;">
+              <span>Today</span><span><b style='color:#fca5a5;'>{stats.fp32_mb:.0f} MB</b></span>
+            </div>
+            <div style="height:18px;border-radius:6px;
+                         background:rgba(239,68,68,0.20);
+                         border:1px solid rgba(239,68,68,0.45);
+                         margin-bottom:18px;"></div>
+            <div style="display:flex;justify-content:space-between;
+                         font-size:0.82rem;color:#94a3b8;margin-bottom:4px;">
+              <span>Deploy-grade</span><span><b style='color:#86efac;'>{slim_mb:.0f} MB</b></span>
+            </div>
+            <div style="height:18px;border-radius:6px;
+                         background:rgba(148,163,184,0.12);position:relative;">
+              <div style="position:absolute;left:0;top:0;bottom:0;
+                           width:{slim_pct}%;border-radius:6px;
+                           background:rgba(22,163,74,0.40);
+                           border:1px solid rgba(22,163,74,0.55);"></div>
+            </div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-with kind_right:
+with glance_right:
     if stats.biggest_layer:
         bn, bc = stats.biggest_layer
-        short = bn if len(bn) <= 36 else "..." + bn[-33:]
         share = bc / max(stats.parameter_count, 1)
+        # Strip the technical full path, just keep the leaf name for readability
+        leaf = bn.split(".")[-1] if "." in bn else bn
         st.markdown(
             f"""
             <div class="metric-card" style="height:210px;display:flex;
                                               flex-direction:column;
                                               justify-content:center;">
-              <div class="metric-label">Heaviest single layer</div>
-              <div style="font-size:1.05rem;font-weight:700;
-                           margin:6px 0 4px;
-                           font-family:ui-monospace,monospace;
-                           word-break:break-all;">
-                {short}
+              <div class="metric-label">Heaviest single piece</div>
+              <div style="font-size:2rem;font-weight:800;color:#38bdf8;
+                           line-height:1;margin:8px 0 6px;">
+                {share:.0%}
               </div>
               <div class="metric-sub">
-                <b>{bc / 1e6:.2f}M params</b> &nbsp;·&nbsp; {share:.1%} of model
+                of the entire model lives in one component
+                ({bc / 1e6:.1f}M parameters).
               </div>
             </div>
             """,
@@ -414,13 +423,11 @@ with kind_right:
 st.markdown("### Category breakdown")
 cols = st.columns(4)
 with cols[0]:
-    _score_card(
-        "Memory footprint", report.precision.score, report.precision.verdict
-    )
+    _score_card("Efficiency", report.precision.score, report.precision.verdict)
 with cols[1]:
-    _score_card("Sparsity", report.pruning.score, report.pruning.verdict)
+    _score_card("Leanness", report.pruning.score, report.pruning.verdict)
 with cols[2]:
-    _score_card("File size", report.size.score, report.size.verdict)
+    _score_card("Compactness", report.size.score, report.size.verdict)
 with cols[3]:
     _score_card(
         "Exportability", report.exportability.score, report.exportability.verdict
@@ -478,22 +485,34 @@ for i, scen in enumerate(scenarios):
                          border-radius:14px;padding:18px 22px;
                          margin-bottom:12px;">
               <div style="display:flex;justify-content:space-between;
-                           align-items:center;margin-bottom:8px;">
-                <div style="font-size:0.72rem;letter-spacing:.14em;
-                             color:{accent};font-weight:800;">
-                  {scen.setting.upper()}
+                           align-items:flex-start;margin-bottom:8px;gap:14px;">
+                <div style="display:flex;align-items:center;gap:12px;
+                             flex:1;min-width:0;">
+                  <div style="color:{accent};flex-shrink:0;">
+                    <svg width="32" height="32" viewBox="0 0 24 24"
+                         xmlns="http://www.w3.org/2000/svg">
+                      {scen.icon}
+                    </svg>
+                  </div>
+                  <div style="min-width:0;">
+                    <div style="font-size:0.72rem;letter-spacing:.14em;
+                                 color:{accent};font-weight:800;">
+                      {scen.setting.upper()}
+                    </div>
+                    <div style="font-size:0.85rem;color:#94a3b8;
+                                 margin-top:2px;">
+                      {scen.target}
+                    </div>
+                  </div>
                 </div>
                 <div style="font-size:0.72rem;letter-spacing:.12em;
                              font-weight:800;color:{accent};
                              background:{bg};
                              border:1px solid {border};
-                             padding:3px 10px;border-radius:999px;">
+                             padding:4px 11px;border-radius:999px;
+                             flex-shrink:0;">
                   {scen.verdict.upper()}
                 </div>
-              </div>
-              <div style="font-size:0.85rem;color:#94a3b8;
-                           margin-bottom:10px;">
-                {scen.target}
               </div>
               <div style="font-size:0.98rem;font-style:italic;color:#e2e8f0;
                            margin-bottom:12px;line-height:1.45;">
@@ -515,7 +534,6 @@ for i, scen in enumerate(scenarios):
 st.divider()
 st.markdown(
     "Want to close every gap above? The Neural Network Optimization course "
-    "covers quantization, pruning, distillation, and ONNX / TensorRT "
-    "deployment for embedded and AV stacks."
+    "trains the engineer who ships -- not just the engineer who trains."
 )
 st.link_button("Enroll in the course", COURSE_URL, type="primary")
