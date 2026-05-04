@@ -422,25 +422,27 @@ def _build_recommendations(
     recs: list[str] = []
     if precision.score < 60:
         recs.append(
-            "Quantize to FP16 (1 line with ``model.half()``) or run dynamic "
-            "INT8 quantization for CPU inference."
+            "Weights are at full precision -- there's a 2-4x size and latency "
+            "win sitting in quantization, but choosing FP16 vs INT8 (and PTQ "
+            "vs QAT) is where most teams trip up."
         )
     if pruning.score < 50:
         headroom = pruning.details.get("near_zero_headroom", 0.0)
         if headroom > 0.15:
             recs.append(
-                f"~{headroom:.0%} of weights are effectively zero. Apply "
-                "magnitude pruning + a short fine-tune to bake in the savings."
+                f"~{headroom:.0%} of weights are effectively zero. Real "
+                "savings need the right pruning schedule + fine-tune recipe."
             )
         else:
             recs.append(
-                "Try structured pruning (channel / head pruning) -- magnitude "
-                "pruning headroom looks limited."
+                "Magnitude pruning headroom is limited. Structured "
+                "(channel / head) pruning could still help -- but it requires "
+                "architecture-aware techniques."
             )
     if size.score < 60:
         recs.append(
-            "Combine quantization with knowledge distillation into a smaller "
-            "student model to shrink the deployable artifact."
+            "Artifact is large for production deployment. Quantization plus "
+            "distillation into a smaller student is the proven combo."
         )
     risky_count = (
         exportability.details.get("onnx_risky_modules", 0)
@@ -448,18 +450,13 @@ def _build_recommendations(
     )
     if exportability.score < 70 and risky_count > 0:
         recs.append(
-            "Refactor risky layers (custom attention, RNN cells) into "
-            "ONNX-friendly equivalents before exporting."
-        )
-    elif exportability.details.get("is_state_dict"):
-        recs.append(
-            "Save the full ``nn.Module`` (not just ``state_dict()``) and re-run "
-            "for a precise export-compatibility verdict."
+            f"{risky_count} layer(s) are likely to fight you on ONNX / "
+            "TensorRT export. Diagnosing and rewriting them is its own skill."
         )
     if not recs:
         recs.append(
-            "Model looks deployment-ready. Benchmark latency on your target "
-            "hardware to confirm."
+            "Looks deployment-ready on paper -- but real-hardware benchmarking "
+            "almost always uncovers more headroom."
         )
     return recs
 

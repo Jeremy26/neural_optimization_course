@@ -347,12 +347,100 @@ _ARCH_SIGNATURES = [
 ]
 
 
+def detect_common_prefix(keys: list[str]) -> str:
+    """If every key shares a single dotted prefix (``net.``, ``model.``, ...)
+    return it (with the trailing dot).  Otherwise return ``""``.
+    """
+    if not keys:
+        return ""
+    candidates = [k.split(".", 1)[0] + "." for k in keys if "." in k]
+    if not candidates or len(set(candidates)) > 1:
+        return ""
+    return candidates[0]
+
+
 def _fingerprint(state_dict: dict) -> str | None:
     keys = set(state_dict.keys())
+    prefix = detect_common_prefix(list(keys))
+    stripped = {k[len(prefix):] for k in keys} if prefix else keys
     for name, sig_keys in _ARCH_SIGNATURES:
-        if all(k in keys for k in sig_keys):
+        if all(k in keys for k in sig_keys) or all(k in stripped for k in sig_keys):
             return name
     return None
+
+
+_TORCHVISION_BUILDERS = {
+    # name -> (callable, default-input-shape)
+    "ResNet18": ("resnet18", (1, 3, 224, 224)),
+    "ResNet34": ("resnet34", (1, 3, 224, 224)),
+    "ResNet50": ("resnet50", (1, 3, 224, 224)),
+    "ResNet101": ("resnet101", (1, 3, 224, 224)),
+    "MobileNet V2": ("mobilenet_v2", (1, 3, 224, 224)),
+    "MobileNet V3 Small": ("mobilenet_v3_small", (1, 3, 224, 224)),
+    "MobileNet V3 Large": ("mobilenet_v3_large", (1, 3, 224, 224)),
+    "EfficientNet B0": ("efficientnet_b0", (1, 3, 224, 224)),
+    "EfficientNet B3": ("efficientnet_b3", (1, 3, 300, 300)),
+    "ViT B/16": ("vit_b_16", (1, 3, 224, 224)),
+    "VGG16": ("vgg16", (1, 3, 224, 224)),
+    "DenseNet121": ("densenet121", (1, 3, 224, 224)),
+    "ConvNeXt Tiny": ("convnext_tiny", (1, 3, 224, 224)),
+}
+
+
+def available_architectures() -> list[str]:
+    """Architecture names we know how to instantiate from torchvision."""
+    try:
+        import torchvision.models  # noqa: F401
+    except Exception:
+        return []
+    return list(_TORCHVISION_BUILDERS.keys())
+
+
+def try_load_into_arch(state_dict: dict, arch_name: str) -> tuple[Any, str | None]:
+    """Instantiate a torchvision model and load the user's state-dict into
+    it (with prefix stripping + ``strict=False``).
+
+    Returns ``(module_or_None, error_or_None)``.  A small number of missing
+    keys is tolerated so users can still get benchmarks even if the head
+    differs (e.g. fine-tuned classifier).
+    """
+    try:
+        import torchvision.models as M
+    except Exception as exc:
+        return None, f"torchvision not available: {exc}"
+
+    if arch_name not in _TORCHVISION_BUILDERS:
+        return None, f"Unknown architecture: {arch_name}"
+    fn_name, _shape = _TORCHVISION_BUILDERS[arch_name]
+    try:
+        model = getattr(M, fn_name)(weights=None)
+    except Exception as exc:
+        return None, f"Couldn't build {arch_name}: {exc}"
+
+    # Strip a single common prefix (net., model., module.) from the keys.
+    prefix = detect_common_prefix(list(state_dict.keys()))
+    cleaned = (
+        {k[len(prefix):]: v for k, v in state_dict.items()}
+        if prefix else dict(state_dict)
+    )
+    try:
+        result = model.load_state_dict(cleaned, strict=False)
+    except Exception as exc:
+        return None, f"State-dict doesn't fit {arch_name}: {exc}"
+
+    missing = len(result.missing_keys)
+    unexpected = len(result.unexpected_keys)
+    matched = len(cleaned) - unexpected
+    expected = len(model.state_dict())
+    coverage = matched / max(expected, 1)
+    if coverage < 0.6:
+        return None, (
+            f"State-dict only covers {coverage:.0%} of {arch_name} -- "
+            f"{missing} missing, {unexpected} unexpected. Pick a different "
+            "architecture."
+        )
+    model.eval()
+    return model, None
 
 
 # ---------------------------------------------------------------------------

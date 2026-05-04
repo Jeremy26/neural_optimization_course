@@ -8,6 +8,7 @@ Run with:
 from __future__ import annotations
 
 import hashlib
+import os
 
 import pandas as pd
 import plotly.express as px
@@ -16,6 +17,52 @@ import streamlit as st
 
 from analyzer import analyze, attach_benchmarks
 import viz
+
+
+# Pro features (live benchmarks, what-if simulations, action plans with code)
+# are gated behind this flag.  Set ``DEPLOYMENT_VIZ_PRO=1`` to unlock during
+# development; in production this stays off so the lead-magnet does its job.
+PRO = os.getenv("DEPLOYMENT_VIZ_PRO", "0") == "1"
+COURSE_URL = "https://www.thinkautonomous.ai/"
+
+
+def _locked_card(title: str, body: str, preview_bullets: list[str]) -> None:
+    bullets_html = "".join(
+        f"<li style='margin:4px 0;color:#cbd5e1;'>{b}</li>"
+        for b in preview_bullets
+    )
+    st.markdown(
+        f"""
+        <div style="position:relative;border:1px dashed rgba(56,189,248,0.45);
+                     border-radius:14px;padding:22px 22px 18px;
+                     background:linear-gradient(160deg, rgba(56,189,248,0.08),
+                                                rgba(15,23,42,0.0));
+                     margin-bottom:8px;">
+          <div style="position:absolute;top:14px;right:18px;
+                       background:rgba(56,189,248,0.18);color:#38bdf8;
+                       padding:3px 10px;border-radius:999px;
+                       font-size:0.72rem;font-weight:700;letter-spacing:.1em;">
+            PRO
+          </div>
+          <div style="font-size:1.15rem;font-weight:700;margin-bottom:4px;">
+            {title}
+          </div>
+          <div style="font-size:0.92rem;color:#cbd5e1;margin-bottom:10px;">
+            {body}
+          </div>
+          <ul style="margin:0 0 14px 18px;padding:0;font-size:0.9rem;">
+            {bullets_html}
+          </ul>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.link_button(
+        "Unlock with the course",
+        COURSE_URL,
+        type="primary",
+        use_container_width=False,
+    )
 
 
 st.set_page_config(
@@ -138,24 +185,49 @@ st.markdown(
 )
 
 with st.sidebar:
-    st.header("How the score works")
     st.markdown(
-        "- **Precision (30%)** -- FP32 weights drag the score down; FP16 / "
-        "INT8 push it up.\n"
-        "- **Pruning (20%)** -- Realised sparsity + near-zero headroom.\n"
-        "- **Size (20%)** -- Smaller artifacts deploy more easily.\n"
-        "- **Exportability (30%)** -- Heuristic, upgraded with a real ONNX "
-        "export attempt when possible.\n\n"
-        "All analysis runs locally in this Streamlit process."
+        """
+        <div style="border:1px solid rgba(56,189,248,0.35);
+                     border-radius:14px; padding:18px;
+                     background:linear-gradient(160deg, rgba(56,189,248,0.10),
+                                                rgba(15,23,42,0.0));">
+          <div style="font-size:0.75rem;letter-spacing:.12em;
+                       text-transform:uppercase;color:#38bdf8;
+                       font-weight:700;margin-bottom:6px;">
+            Neural Network Optimization
+          </div>
+          <div style="font-size:1.15rem;font-weight:700;line-height:1.25;
+                       margin-bottom:10px;">
+            Stop shipping FP32 ResNets in 2026.
+          </div>
+          <div style="font-size:0.92rem;color:#cbd5e1;line-height:1.55;">
+            This audit shows you <i>what's wrong</i>. The course shows you
+            <b>how to fix it</b> -- quantization, pruning, distillation, and
+            ONNX / TensorRT deployment, end to end, on real models.
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown("")
+    st.markdown(
+        "**You'll learn to:**\n"
+        "- Cut model size 4x without touching accuracy\n"
+        "- Hit 2-3x lower latency on the same hardware\n"
+        "- Ship to mobile, edge, and serverless without surprises\n"
+        "- Debug failed ONNX / TensorRT exports like a pro"
+    )
+    st.link_button(
+        "Enroll in the course",
+        "https://www.thinkautonomous.ai/",
+        type="primary",
+        use_container_width=True,
     )
     st.divider()
     st.caption(
-        "Live benchmarks (latency / FLOPs / ONNX / quant & prune sims) run on "
-        "demand from the main panel. They take 5-30 seconds depending on "
-        "model size."
+        "Your file never leaves this process -- analysis runs locally in "
+        "Streamlit."
     )
-    st.divider()
-    st.caption("Companion tool to the Neural Network Optimization course.")
 
 uploaded = st.file_uploader(
     "Drop your `.pt` / `.pth` here", type=["pt", "pth"], accept_multiple_files=False
@@ -229,9 +301,13 @@ with hero_right:
         )
     st.markdown(" ".join(badges), unsafe_allow_html=True)
 
-    st.markdown("**What to do next**")
+    st.markdown("**Opportunities**")
     for rec in report.recommendations:
         st.markdown(f"- {rec}")
+    st.caption(
+        "Spotted the gap? The course teaches you how to close it -- see "
+        "the panel on the left."
+    )
 
 # ---------------------------------------------------------------------------
 # Category breakdown
@@ -254,29 +330,84 @@ with cols[3]:
 # Live benchmarks (opt-in -- they're slow on big models)
 # ---------------------------------------------------------------------------
 
-if not ss.get("benchmarks_done") and report.dynamic is None:
+if not PRO:
+    st.markdown("### Live benchmarks & what-if simulations")
+    _locked_card(
+        title="See exactly what optimization will buy you -- before you do it.",
+        body=(
+            "We run your model under realistic conditions and simulate the "
+            "transforms the course teaches, so you know which moves are "
+            "worth your time."
+        ),
+        preview_bullets=[
+            "Real CPU latency (mean + p95) and peak activation memory",
+            "FLOP count + per-layer cost breakdown",
+            "Actual ONNX export attempt -- pass / fail with the real error",
+            "INT8 quantization simulation: projected size + output drift",
+            "Magnitude pruning at 30 / 50 / 70%: projected savings + drift",
+        ],
+    )
+
+if PRO and not ss.get("benchmarks_done") and report.dynamic is None:
     st.markdown("### Live benchmarks")
     is_module = report.raw.get("is_module", False)
     if is_module:
-        button_label = "Run live benchmarks"
-        help_text = (
-            "Runs a real forward pass, attempts an ONNX export, and simulates "
-            "INT8 quantization + magnitude pruning. Takes ~5s on small models, "
-            "up to a minute on large ones."
-        )
+        if st.button(
+            "Run live benchmarks", type="primary",
+            help=(
+                "Runs a real forward pass, attempts ONNX export, and simulates "
+                "INT8 quantization + magnitude pruning. Takes ~5s on small "
+                "models, up to a minute on large ones."
+            ),
+        ):
+            with st.spinner("Benchmarking..."):
+                ss["report"] = attach_benchmarks(ss["report"], ss["obj"])
+                ss["benchmarks_done"] = True
+            st.rerun()
     else:
-        button_label = "Run available benchmarks"
-        help_text = (
-            "Checkpoint is a state-dict only -- we'll fingerprint the "
-            "architecture but can't run a forward pass without the module."
-        )
-    if st.button(button_label, type="primary", help=help_text):
-        with st.spinner("Benchmarking (forward pass, ONNX export, quant/prune sims)..."):
-            ss["report"] = attach_benchmarks(ss["report"], ss["obj"])
-            ss["benchmarks_done"] = True
-        st.rerun()
+        # State-dict path: let the user pick a torchvision architecture so we
+        # can instantiate it, load the weights in, and benchmark for real.
+        from benchmarks import available_architectures, try_load_into_arch
 
-dyn = ss["report"].dynamic
+        archs = available_architectures()
+        if not archs:
+            st.info(
+                "Live benchmarks need either a full ``nn.Module`` or "
+                "``torchvision`` installed (it isn't). Install torchvision "
+                "and re-run, or save with ``torch.save(model, ...)``."
+            )
+        else:
+            # Pre-select from the fingerprint where possible.
+            fingerprint = (
+                report.dynamic.architecture_guess if report.dynamic else None
+            )
+            default_idx = 0
+            for i, name in enumerate(archs):
+                if fingerprint and name.startswith(fingerprint):
+                    default_idx = i
+                    break
+            st.markdown(
+                "This file is a state-dict only. Pick the matching "
+                "architecture and we'll load the weights into a fresh "
+                "torchvision model so we can benchmark it for real:"
+            )
+            arch_choice = st.selectbox(
+                "Architecture", archs, index=default_idx,
+                label_visibility="collapsed",
+            )
+            if st.button("Load & run live benchmarks", type="primary"):
+                with st.spinner(f"Loading weights into {arch_choice}..."):
+                    module, err = try_load_into_arch(ss["obj"], arch_choice)
+                if err:
+                    st.error(err)
+                else:
+                    with st.spinner("Benchmarking..."):
+                        ss["obj"] = module
+                        ss["report"] = attach_benchmarks(ss["report"], module)
+                        ss["benchmarks_done"] = True
+                    st.rerun()
+
+dyn = ss["report"].dynamic if PRO else None
 report = ss["report"]
 if dyn is not None:
     st.markdown("### Live benchmarks")
@@ -379,8 +510,8 @@ if dyn is not None and (dyn.quantization_sim or dyn.pruning_sim):
 
 st.markdown("### Inside your model")
 st.caption(
-    "Where the weight (and the cost) actually lives. Hover, zoom, click into "
-    "branches."
+    "Each rectangle is a parameter tensor sized by its share of the total. "
+    "Click a branch to zoom in; click the breadcrumb to zoom back out."
 )
 
 obj = ss.get("obj")
@@ -396,8 +527,11 @@ if tree and has_real_nodes:
         labels=df["label"],
         parents=df["parent"],
         values=df["params"],
-        branchvalues="total",
-        hovertemplate="<b>%{label}</b><br>%{value:,} params<br>%{percentRoot:.1%} of model<extra></extra>",
+        # "remainder" lets parents have value 0 while showing children inside,
+        # which is what we want -- intermediate paths like "net.layer1" carry
+        # no params of their own, only the leaves do.
+        branchvalues="remainder",
+        hovertemplate="<b>%{label}</b><br>%{value:,} params<extra></extra>",
         marker=dict(
             colors=df["params"],
             colorscale="Tealgrn",
@@ -424,61 +558,103 @@ else:
 viz_left, viz_right = st.columns(2)
 
 with viz_left:
-    st.markdown("#### Per-layer parameter cost")
+    st.markdown("#### Where your parameters live")
     layers = viz.per_layer_costs(obj)
     if layers:
-        df = pd.DataFrame(layers).head(15)
+        total_params = sum(l["params"] for l in layers)
+        top_layers = layers[:15]
+        top3_share = sum(l["params"] for l in layers[:3]) / max(total_params, 1)
+        # Find the "fat" prefix -- e.g. all of net.layer4.* if that branch
+        # dominates the param count.  Group by 3-deep prefix.
+        from collections import defaultdict as _dd
+        prefix_share = _dd(int)
+        for l in layers:
+            parts = l["name"].split(".")
+            prefix = ".".join(parts[: min(3, len(parts) - 1)]) if len(parts) > 1 else l["name"]
+            prefix_share[prefix] += l["params"]
+        biggest_prefix, biggest_share = max(
+            prefix_share.items(), key=lambda kv: kv[1]
+        )
+        biggest_pct = biggest_share / max(total_params, 1)
+        st.markdown(
+            f"**Top 3 layers = {top3_share:.0%} of all parameters.** "
+            f"Branch ``{biggest_prefix}.*`` alone holds {biggest_pct:.0%} -- "
+            "the highest-impact pruning target."
+        )
+
+        df = pd.DataFrame(top_layers)
+        df["share"] = df["params"] / max(total_params, 1)
         df["short_name"] = df["name"].apply(
-            lambda s: s if len(s) <= 30 else "..." + s[-27:]
+            lambda s: s if len(s) <= 32 else "..." + s[-29:]
         )
         fig = px.bar(
             df,
             x="params", y="short_name", color="type",
             orientation="h",
-            hover_data={"name": True, "short_name": False, "params": ":,", "type": True},
+            text=df["share"].map(lambda x: f"{x:.1%}"),
+            hover_data={
+                "name": True, "short_name": False,
+                "params": ":,", "type": True, "share": ":.1%",
+            },
             labels={"params": "Parameters", "short_name": "", "type": "Module"},
         )
+        fig.update_traces(textposition="outside", cliponaxis=False)
         fig.update_layout(
-            height=420, margin=dict(t=10, b=10, l=10, r=10),
+            height=460, margin=dict(t=10, b=40, l=10, r=40),
             yaxis=dict(autorange="reversed"),
-            legend=dict(orientation="h", y=-0.2),
+            legend=dict(orientation="h", y=-0.18),
         )
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.info("No layer-level parameter data found in this checkpoint.")
 
 with viz_right:
-    st.markdown("#### Weight magnitude distributions")
+    st.markdown("#### Weight distributions & prunability")
     hists = viz.weight_histograms(obj)
     if hists:
+        st.caption(
+            "For each layer: the share of weights below 1% of the layer's "
+            "max magnitude (the dashed line). That's roughly how much you "
+            "can prune with magnitude pruning before retraining."
+        )
         for h in hists:
             edges = h["bin_edges"]
             counts = h["counts"]
             centers = [(edges[i] + edges[i+1]) / 2 for i in range(len(counts))]
+            threshold = h["max_abs"] * 0.01
+            below = sum(c for c, e in zip(counts, edges[:-1]) if e < threshold)
+            below_pct = below / max(sum(counts), 1)
             short = h["name"] if len(h["name"]) <= 40 else "..." + h["name"][-37:]
             fig = go.Figure(go.Bar(
                 x=centers, y=counts,
                 marker=dict(color="#38bdf8"),
-                hovertemplate="|w|=%{x:.4f}<br>count=%{y}<extra></extra>",
+                hovertemplate="|w|=%{x:.4f}<br>count=%{y:,}<extra></extra>",
             ))
+            fig.add_vline(
+                x=threshold, line_dash="dash", line_color="#f59e0b",
+                annotation_text=f"{below_pct:.0%} below",
+                annotation_position="top right",
+                annotation_font_color="#f59e0b",
+            )
             fig.update_layout(
                 title=dict(
-                    text=f"{short}  ·  shape={tuple(h['shape'])}",
+                    text=(
+                        f"{short}  ·  shape={tuple(h['shape'])}  ·  "
+                        f"<span style='color:#f59e0b'>"
+                        f"{below_pct:.0%} prunable</span>"
+                    ),
                     font=dict(size=12),
                 ),
-                height=180,
-                margin=dict(t=30, b=20, l=10, r=10),
+                height=200,
+                margin=dict(t=36, b=24, l=10, r=10),
                 xaxis_title="|weight|",
                 yaxis_title=None,
                 bargap=0.0,
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(15,23,42,0.04)",
+                showlegend=False,
             )
             st.plotly_chart(fig, use_container_width=True)
-        st.caption(
-            "Heavy mass near zero = pruning headroom. A long tail to the "
-            "right = a few very large weights driving the layer."
-        )
     else:
         st.info("No 2D+ weight tensors to plot.")
 
@@ -516,6 +692,43 @@ with mix_right:
                           showlegend=True,
                           legend=dict(orientation="v", x=1.02, y=0.5))
         st.plotly_chart(fig, use_container_width=True)
+
+st.markdown("### Action plan")
+if not PRO:
+    _locked_card(
+        title="Tailored, copy-paste code recipes for each opportunity above.",
+        body=(
+            "The course pairs every gap we just spotted with a working "
+            "PyTorch / ONNX / TensorRT recipe -- and an explanation of when "
+            "to reach for each."
+        ),
+        preview_bullets=[
+            "Quantization recipes: dynamic INT8, static INT8, QAT",
+            "Pruning recipes: magnitude, structured, movement -- with "
+            "fine-tune schedules",
+            "Distillation: building a student that keeps the accuracy",
+            "ONNX & TensorRT: opset choice, dynamic axes, plugin authoring",
+            "Hardware-aware tuning for CPU, GPU, mobile, edge",
+        ],
+    )
+else:
+    # Pro tier: actually show the recipes.
+    for rec in report.recommendations:
+        st.markdown(f"- {rec}")
+    st.code(
+        "# Quantize to FP16\n"
+        "model.half()\n"
+        "torch.save(model, 'model_fp16.pt')\n\n"
+        "# Magnitude pruning at 50%\n"
+        "import torch.nn.utils.prune as prune\n"
+        "for m in model.modules():\n"
+        "    if isinstance(m, (torch.nn.Linear, torch.nn.Conv2d)):\n"
+        "        prune.l1_unstructured(m, name='weight', amount=0.5)\n"
+        "        prune.remove(m, 'weight')\n\n"
+        "# ONNX export\n"
+        "torch.onnx.export(model, dummy, 'model.onnx', opset_version=17)\n",
+        language="python",
+    )
 
 # Power-user JSON dump, hidden by default.
 with st.expander("Raw analysis JSON"):
