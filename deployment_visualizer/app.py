@@ -16,13 +16,14 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from analyzer import analyze, attach_benchmarks
+from problems import detect_problems
 import viz
 
 
-# Pro features (live benchmarks, what-if simulations, action plans with code)
-# are gated behind this flag.  Set ``DEPLOYMENT_VIZ_PRO=1`` to unlock during
-# development; in production this stays off so the lead-magnet does its job.
-PRO = os.getenv("DEPLOYMENT_VIZ_PRO", "0") == "1"
+# Pro features (live benchmarks, what-if simulations, action plans).
+# Default is unlocked for admin/dev use; set ``DEPLOYMENT_VIZ_FREE=1`` to
+# preview what the free tier looks like before we split into two files.
+PRO = os.getenv("DEPLOYMENT_VIZ_FREE", "0") != "1"
 COURSE_URL = "https://www.thinkautonomous.ai/"
 
 
@@ -150,14 +151,63 @@ def _gauge(score: float) -> go.Figure:
 
 def _score_card(label: str, score: float, verdict: str) -> None:
     color = _score_color(score)
+    # Position bar: where the score sits, with a "pro range" band marked.
+    score_pct = max(0.0, min(100.0, score))
+    pro_min, pro_max = 75, 100  # what well-optimized models score
     st.markdown(
         f"""
-        <div class="metric-card">
+        <div class="metric-card score-card">
           <div class="metric-label">{label}</div>
-          <div class="metric-value" style="color:{color};">
-            {score:.0f}<span style="font-size:1rem;color:#64748b;"> / 100</span>
+          <div style="display:flex;align-items:baseline;gap:6px;
+                       margin:8px 0 12px;">
+            <div style="font-size:3rem;font-weight:800;color:{color};
+                         line-height:1;">{score:.0f}</div>
+            <div style="font-size:1rem;color:#64748b;">/ 100</div>
           </div>
-          <div class="metric-sub">{verdict}</div>
+          <div class="metric-sub" style="min-height:2.6em;">{verdict}</div>
+          <div style="position:relative;height:8px;border-radius:4px;
+                       background:rgba(148,163,184,0.18);margin-top:14px;">
+            <div style="position:absolute;left:{pro_min}%;width:{pro_max-pro_min}%;
+                         top:0;bottom:0;background:rgba(22,163,74,0.20);
+                         border-radius:4px;"></div>
+            <div style="position:absolute;left:0;top:0;height:100%;
+                         width:{score_pct}%;background:{color};
+                         border-radius:4px;"></div>
+            <div style="position:absolute;left:{score_pct}%;top:-3px;
+                         width:2px;height:14px;background:{color};
+                         transform:translateX(-1px);"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;
+                       font-size:0.7rem;color:#64748b;margin-top:6px;">
+            <span>amateur</span><span>pro range</span>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _problem_callout(p) -> None:
+    color_map = {
+        "critical": ("#ef4444", "rgba(239,68,68,0.10)", "rgba(239,68,68,0.35)"),
+        "warning":  ("#f59e0b", "rgba(245,158,11,0.10)", "rgba(245,158,11,0.35)"),
+        "info":     ("#38bdf8", "rgba(56,189,248,0.10)", "rgba(56,189,248,0.35)"),
+    }
+    accent, bg, border = color_map.get(p.severity, color_map["info"])
+    severity_label = {"critical": "CRITICAL",
+                      "warning": "WEAKNESS",
+                      "info": "WATCH-OUT"}.get(p.severity, "ISSUE")
+    st.markdown(
+        f"""
+        <div style="border:1px solid {border};background:{bg};
+                     border-radius:12px;padding:16px 20px;margin-bottom:10px;">
+          <div style="font-size:0.7rem;letter-spacing:.14em;font-weight:800;
+                       color:{accent};margin-bottom:6px;">{severity_label}</div>
+          <div style="font-size:1.1rem;font-weight:700;line-height:1.3;
+                       margin-bottom:6px;">{p.headline}</div>
+          <div style="font-size:0.92rem;color:#cbd5e1;line-height:1.5;">
+            {p.detail}
+          </div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -301,13 +351,149 @@ with hero_right:
         )
     st.markdown(" ".join(badges), unsafe_allow_html=True)
 
-    st.markdown("**Opportunities**")
+    st.markdown("**Weaknesses & Opportunities**")
     for rec in report.recommendations:
         st.markdown(f"- {rec}")
     st.caption(
         "Spotted the gap? The course teaches you how to close it -- see "
         "the panel on the left."
     )
+
+# ---------------------------------------------------------------------------
+# Network at a glance -- the by-the-numbers panel
+# ---------------------------------------------------------------------------
+
+from device_estimates import network_stats, estimate_latency_ms  # noqa: E402
+
+stats = network_stats(ss["obj"])
+
+st.markdown("### Network at a glance")
+m1, m2, m3, m4, m5, m6 = st.columns(6)
+m1.metric("Parameters", f"{stats.parameter_count / 1e6:.2f}M")
+m2.metric("Weight tensors", f"{stats.weight_tensors}")
+m3.metric("Leaf modules", f"{stats.leaf_modules}")
+m4.metric("FP32 footprint", f"{stats.fp32_mb:.1f} MB")
+m5.metric(
+    "→ FP16",
+    f"{stats.fp16_mb:.1f} MB",
+    delta=f"-{stats.fp32_mb - stats.fp16_mb:.1f} MB",
+    delta_color="inverse",
+)
+m6.metric(
+    "→ INT8",
+    f"{stats.int8_mb:.1f} MB",
+    delta=f"-{stats.fp32_mb - stats.int8_mb:.1f} MB",
+    delta_color="inverse",
+)
+
+# Layer-kind composition: what fraction of params lives in Conv vs Linear vs Norm?
+kind_left, kind_right = st.columns([2, 1])
+with kind_left:
+    if stats.layer_kind_share:
+        kdf = pd.DataFrame(
+            [(k, v) for k, v in stats.layer_kind_share.items()],
+            columns=["kind", "params"],
+        ).sort_values("params", ascending=True)
+        kdf["share"] = kdf["params"] / max(kdf["params"].sum(), 1)
+        fig = px.bar(
+            kdf, y="kind", x="params", orientation="h",
+            text=kdf["share"].map(lambda x: f"{x:.0%}"),
+            color="kind",
+            labels={"params": "Parameters", "kind": ""},
+        )
+        fig.update_traces(textposition="outside", cliponaxis=False)
+        fig.update_layout(
+            height=210, margin=dict(t=10, b=10, l=10, r=40),
+            showlegend=False,
+            title=dict(text="Where the weight lives by layer kind", font=dict(size=13)),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+with kind_right:
+    if stats.biggest_layer:
+        bn, bc = stats.biggest_layer
+        short = bn if len(bn) <= 36 else "..." + bn[-33:]
+        share = bc / max(stats.parameter_count, 1)
+        st.markdown(
+            f"""
+            <div class="metric-card" style="height:210px;display:flex;
+                                              flex-direction:column;
+                                              justify-content:center;">
+              <div class="metric-label">Heaviest single layer</div>
+              <div style="font-size:1.05rem;font-weight:700;
+                           margin:6px 0 4px;
+                           font-family:ui-monospace,monospace;
+                           word-break:break-all;">
+                {short}
+              </div>
+              <div class="metric-sub">
+                <b>{bc / 1e6:.2f}M params</b> &nbsp;·&nbsp; {share:.1%} of model
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+# ---------------------------------------------------------------------------
+# Device latency estimate -- compute statically on FLOPs (when available).
+# ---------------------------------------------------------------------------
+
+flops = ss["report"].dynamic.flops if (ss["report"].dynamic and ss["report"].dynamic.flops) else None
+if flops:
+    st.markdown("#### Estimated single-pass latency on common targets")
+    dtype_choice = st.radio(
+        "Inference precision",
+        options=["fp32", "fp16", "int8"],
+        format_func=lambda d: d.upper(),
+        index=1,
+        horizontal=True,
+        key="latency_dtype",
+    )
+    rows = estimate_latency_ms(flops, dtype=dtype_choice)
+    df = pd.DataFrame(rows)
+    df["latency"] = df["latency_ms"].map(
+        lambda x: f"{x:.2f} ms" if x >= 0.5 else f"{x*1000:.0f} µs"
+    )
+    df["throughput"] = df["throughput_per_s"].map(
+        lambda x: f"{x:,.0f} /s" if x < 1e5 else f"{x/1000:,.0f}k /s"
+    )
+    df["peak"] = df.apply(
+        lambda r: f"{r['peak_tflops']:.0f} {'TOPS' if dtype_choice == 'int8' else 'TFLOPS'}",
+        axis=1,
+    )
+    df["efficiency"] = df["efficiency"].map(lambda x: f"{x:.0%}")
+    st.dataframe(
+        df[["device", "peak", "efficiency", "latency", "throughput"]],
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "device": "Target",
+            "peak": "Peak",
+            "efficiency": "Realistic eff.",
+            "latency": "Per forward",
+            "throughput": "Throughput",
+        },
+    )
+    st.caption(
+        f"Theoretical estimates from {flops/1e9:.2f} GFLOPs at "
+        f"{dtype_choice.upper()}. Real batch=1 latency is typically 2-5x "
+        "slower due to kernel-launch overhead; the course covers how to "
+        "close that gap."
+    )
+else:
+    st.info(
+        "Run the live benchmarks below to enable device latency estimates "
+        "(needs FLOP count from a real forward pass)."
+    )
+
+# ---------------------------------------------------------------------------
+# Problems detected -- damning quantified callouts
+# ---------------------------------------------------------------------------
+
+st.markdown("### Problems detected")
+problems = detect_problems(report)
+for p in problems:
+    _problem_callout(p)
 
 # ---------------------------------------------------------------------------
 # Category breakdown
@@ -508,10 +694,11 @@ if dyn is not None and (dyn.quantization_sim or dyn.pruning_sim):
 # Inside your model -- visualizations
 # ---------------------------------------------------------------------------
 
-st.markdown("### Inside your model")
+st.markdown("### Where you're leaking performance")
 st.caption(
-    "Each rectangle is a parameter tensor sized by its share of the total. "
-    "Click a branch to zoom in; click the breadcrumb to zoom back out."
+    "Each rectangle is a parameter tensor sized by its share of total weight. "
+    "Big boxes are big targets -- the layers you'd hit first if you were "
+    "serious about shipping this model."
 )
 
 obj = ss.get("obj")
