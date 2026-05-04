@@ -58,130 +58,109 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-      /* ============= PAGE CHROME ============= */
-      .stApp {
-        background:
-          radial-gradient(1200px 600px at 10% -10%, rgba(245,158,11,0.05), transparent 60%),
-          radial-gradient(1000px 600px at 110% 10%, rgba(34,211,238,0.05), transparent 60%),
-          linear-gradient(180deg, #060914 0%, #0a0f1f 100%);
-        background-attachment: fixed;
-      }
-      .stApp::before {
-        /* Engineering grid paper -- subtle but visible */
-        content: "";
-        position: fixed; inset: 0;
-        background-image:
-          linear-gradient(rgba(148,163,184,0.045) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(148,163,184,0.045) 1px, transparent 1px);
-        background-size: 40px 40px;
-        pointer-events: none;
-        z-index: 0;
-      }
-      .block-container {
-        padding-top: 2rem; max-width: 1320px; position: relative; z-index: 1;
-      }
+      /* ============ PAGE CHROME ============ */
+      .stApp { background: #0a0f1f; }
+      .block-container { padding-top: 2rem; max-width: 1320px; }
 
-      /* ============= TYPOGRAPHY ============= */
-      h1, h2, h3, h4 { letter-spacing: -0.01em; }
-      h1 {
-        font-size: 2.4rem; font-weight: 800;
-        background: linear-gradient(90deg, #f8fafc 0%, #cbd5e1 100%);
-        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-        background-clip: text;
+      /* ============ TYPOGRAPHY ============
+         Force bright text on dark, no clever gradients (those fade out). */
+      h1, h2, h3, h4, h5, h6,
+      .stMarkdown h1, .stMarkdown h2, .stMarkdown h3,
+      .stMarkdown h4, .stMarkdown h5, .stMarkdown h6 {
+        color: #f8fafc !important;
+        letter-spacing: -0.005em;
       }
+      h1 { font-size: 2.2rem; font-weight: 800; }
+      h2 { font-size: 1.6rem; font-weight: 800; }
       h3 {
+        font-size: 1.3rem; font-weight: 700;
         position: relative; padding-left: 14px;
-        font-weight: 700; letter-spacing: .02em;
+        margin-top: 1.6rem;
       }
       h3::before {
         content: ""; position: absolute; left: 0; top: 0.2em; bottom: 0.2em;
-        width: 4px; border-radius: 2px;
-        background: linear-gradient(180deg, #f59e0b 0%, #22d3ee 100%);
+        width: 4px; border-radius: 2px; background: #f59e0b;
       }
       h4 {
-        text-transform: uppercase; letter-spacing: .14em;
-        font-size: 0.82rem; color: #94a3b8; font-weight: 700;
-        margin-top: 1.6rem;
+        font-size: 1.05rem; font-weight: 700;
+        margin-top: 1.2rem;
       }
 
-      /* ============= TABS (industrial console look) ============= */
+      /* Body text contrast */
+      .stMarkdown p, .stMarkdown li { color: #cbd5e1; }
+      [data-testid="stCaptionContainer"] { color: #94a3b8; }
+
+      /* ============ SIDEBAR ============ */
+      [data-testid="stSidebar"] {
+        background: #0f172a;
+        border-right: 1px solid rgba(148,163,184,0.18);
+      }
+      [data-testid="stSidebar"] * { color: #e2e8f0; }
+      [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2,
+      [data-testid="stSidebar"] h3, [data-testid="stSidebar"] h4 {
+        color: #f8fafc !important;
+      }
+
+      /* ============ TABS (console-shelf look) ============ */
       .stTabs [data-baseweb="tab-list"] {
         gap: 4px;
         border-bottom: 1px solid rgba(148,163,184,0.18);
-        padding-bottom: 0;
       }
       .stTabs [data-baseweb="tab"] {
-        height: 52px; padding: 0 22px;
-        background: rgba(15,23,42,0.40);
-        border: 1px solid rgba(148,163,184,0.12);
+        height: 48px; padding: 0 22px;
+        background: rgba(15,23,42,0.50);
+        border: 1px solid rgba(148,163,184,0.14);
         border-bottom: none;
         border-radius: 8px 8px 0 0;
-        color: #94a3b8; font-weight: 700;
-        letter-spacing: .04em; font-size: 0.95rem;
-        transition: all 0.15s ease;
+        color: #94a3b8 !important;
+        font-weight: 700; font-size: 0.95rem;
       }
       .stTabs [data-baseweb="tab"]:hover {
-        color: #e2e8f0; background: rgba(15,23,42,0.65);
+        color: #e2e8f0 !important;
+        background: rgba(15,23,42,0.80);
       }
       .stTabs [aria-selected="true"] {
         color: #f8fafc !important;
-        background: linear-gradient(180deg,
-                                     rgba(245,158,11,0.08),
-                                     rgba(245,158,11,0.02)) !important;
-        border-color: rgba(245,158,11,0.45) !important;
-        border-bottom-color: transparent !important;
+        background: rgba(245,158,11,0.10) !important;
+        border-color: rgba(245,158,11,0.50) !important;
         box-shadow: inset 0 2px 0 #f59e0b;
       }
 
-      /* ============= CARDS ============= */
+      /* ============ CARDS ============ */
       .metric-card {
-        border: 1px solid rgba(148,163,184,0.16);
-        border-radius: 12px;
+        border: 1px solid rgba(148,163,184,0.18);
+        border-radius: 10px;
         padding: 18px 20px 16px;
-        background:
-          linear-gradient(180deg,
-                           rgba(15,23,42,0.70) 0%,
-                           rgba(15,23,42,0.40) 100%);
-        position: relative;
-        backdrop-filter: blur(4px);
-      }
-      .metric-card::before {
-        /* Top corner accent -- like an engineering callout */
-        content: ""; position: absolute; top: 0; left: 18px; right: 18px;
-        height: 1px;
-        background: linear-gradient(90deg,
-                                     transparent,
-                                     rgba(34,211,238,0.40),
-                                     transparent);
+        background: #111827;
       }
       .metric-label {
-        font-size: 0.72rem; color: #64748b;
+        font-size: 0.72rem; color: #94a3b8;
         text-transform: uppercase; letter-spacing: .14em;
         font-weight: 700;
       }
-      .metric-value { font-size: 2.0rem; font-weight: 800; line-height: 1.1; }
-      .metric-sub  { font-size: 0.92rem; color: #cbd5e1; margin-top: 4px; }
-      .score-card  {
-        border-color: rgba(148,163,184,0.20);
+      .metric-value {
+        font-size: 2.0rem; font-weight: 800; line-height: 1.1;
+        color: #f8fafc;
       }
+      .metric-sub  { font-size: 0.92rem; color: #cbd5e1; margin-top: 4px; }
 
-      /* ============= BADGES ============= */
+      /* ============ BADGES ============ */
       .arch-badge {
         display: inline-block; padding: 5px 12px; border-radius: 6px;
         background: rgba(34,211,238,0.10);
-        border: 1px solid rgba(34,211,238,0.30);
+        border: 1px solid rgba(34,211,238,0.35);
         color: #67e8f9; font-weight: 700;
-        font-size: 0.78rem; letter-spacing: .06em;
+        font-size: 0.78rem; letter-spacing: .04em;
         margin-right: 6px; margin-bottom: 4px;
         font-family: ui-monospace, "SF Mono", Menlo, monospace;
       }
 
-      /* ============= STATUS PILL (top of the page) ============= */
+      /* ============ STATUS PILL ============ */
       .status-pill {
         display: inline-flex; align-items: center; gap: 8px;
         padding: 6px 14px; border-radius: 999px;
         background: rgba(16,185,129,0.10);
-        border: 1px solid rgba(16,185,129,0.35);
+        border: 1px solid rgba(16,185,129,0.45);
         color: #6ee7b7; font-size: 0.78rem; font-weight: 700;
         letter-spacing: .12em;
         font-family: ui-monospace, "SF Mono", Menlo, monospace;
@@ -194,55 +173,50 @@ st.markdown(
       }
       @keyframes pulse {
         0%, 100% { opacity: 1; }
-        50% { opacity: 0.45; }
+        50% { opacity: 0.5; }
       }
 
-      /* ============= BUTTONS ============= */
+      /* ============ BUTTONS ============ */
       .stButton > button[kind="primary"] {
-        background: linear-gradient(180deg, #f59e0b 0%, #d97706 100%);
+        background: #f59e0b !important;
         border: 1px solid #b45309;
-        color: #0c0a09; font-weight: 800;
-        letter-spacing: .04em;
-        text-transform: uppercase; font-size: 0.85rem;
-        box-shadow: 0 1px 0 rgba(255,255,255,0.20) inset,
-                    0 4px 14px rgba(245,158,11,0.30);
+        color: #0c0a09 !important; font-weight: 800;
+        letter-spacing: .04em; text-transform: uppercase;
       }
       .stButton > button[kind="primary"]:hover {
-        background: linear-gradient(180deg, #fbbf24 0%, #f59e0b 100%);
-        box-shadow: 0 1px 0 rgba(255,255,255,0.25) inset,
-                    0 6px 18px rgba(245,158,11,0.45);
+        background: #fbbf24 !important;
       }
       .stButton > button[kind="secondary"] {
-        background: rgba(15,23,42,0.70);
+        background: rgba(15,23,42,0.80);
         border: 1px solid rgba(148,163,184,0.30);
         color: #e2e8f0; font-weight: 700;
-        letter-spacing: .04em; text-transform: uppercase;
-        font-size: 0.82rem;
-      }
-      .stButton > button[kind="secondary"]:hover {
-        border-color: rgba(34,211,238,0.50);
-        color: #67e8f9;
+        letter-spacing: .04em;
       }
       .stDownloadButton > button {
-        background: rgba(34,211,238,0.10);
-        border: 1px solid rgba(34,211,238,0.45);
-        color: #67e8f9; font-weight: 800;
-        letter-spacing: .06em; text-transform: uppercase;
-        font-size: 0.82rem;
+        background: rgba(34,211,238,0.12);
+        border: 1px solid rgba(34,211,238,0.50);
+        color: #67e8f9 !important; font-weight: 800;
+        letter-spacing: .04em; text-transform: uppercase;
       }
       .stDownloadButton > button:hover {
-        background: rgba(34,211,238,0.18);
-        color: #f0fdff;
+        background: rgba(34,211,238,0.20);
       }
 
-      /* ============= DIVIDERS / GENERAL ============= */
+      /* ============ MISC ============ */
       hr { border-color: rgba(148,163,184,0.18); }
-      .stRadio > div { gap: 8px; }
       [data-testid="stMarkdownContainer"] code {
         background: rgba(34,211,238,0.10);
         border: 1px solid rgba(34,211,238,0.25);
         border-radius: 4px; padding: 1px 6px;
-        color: #67e8f9; font-size: 0.85em;
+        color: #67e8f9; font-size: 0.88em;
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      }
+      [data-testid="stFileUploaderDropzone"] {
+        background: #111827;
+        border: 2px dashed rgba(148,163,184,0.30);
+      }
+      [data-testid="stFileUploaderDropzone"]:hover {
+        border-color: rgba(245,158,11,0.55);
       }
     </style>
     """,
@@ -386,14 +360,14 @@ def _format_flops(flops: int) -> str:
 st.markdown(
     """
     <div style="display:flex;justify-content:space-between;align-items:center;
-                 flex-wrap:wrap;gap:14px;margin-bottom:14px;">
+                 flex-wrap:wrap;gap:14px;margin-bottom:18px;">
       <div style="display:flex;align-items:center;gap:14px;">
-        <div style="width:46px;height:46px;border-radius:10px;
-                     background:linear-gradient(135deg,#f59e0b 0%,#22d3ee 100%);
+        <div style="width:48px;height:48px;border-radius:10px;
+                     background:#f59e0b;
                      display:flex;align-items:center;justify-content:center;
                      font-family:ui-monospace,monospace;font-weight:900;
-                     font-size:1.25rem;color:#0c0a09;
-                     box-shadow:0 0 24px rgba(245,158,11,0.25);">
+                     font-size:1.5rem;color:#0c0a09;
+                     box-shadow:0 0 20px rgba(245,158,11,0.35);">
           ⌬
         </div>
         <div>
@@ -401,23 +375,21 @@ st.markdown(
                        color:#94a3b8;font-weight:700;">
             DEPLOYMENT QUALIFICATION TERMINAL
           </div>
-          <div style="font-size:1.9rem;font-weight:800;line-height:1.1;
-                       margin-top:2px;
-                       background:linear-gradient(90deg,#f8fafc,#cbd5e1);
-                       -webkit-background-clip:text;
-                       -webkit-text-fill-color:transparent;">
+          <div style="font-size:2.0rem;font-weight:800;line-height:1.1;
+                       margin-top:2px;color:#f8fafc;">
             Deploy/X &nbsp;·&nbsp; Model Health Audit
           </div>
         </div>
       </div>
       <div class="status-pill">SYSTEM ONLINE</div>
     </div>
-    <div style="font-size:0.95rem;color:#cbd5e1;line-height:1.55;
-                 max-width:780px;">
+    <div style="font-size:0.98rem;color:#cbd5e1;line-height:1.55;
+                 max-width:820px;margin-bottom:8px;">
       Drop a PyTorch checkpoint and we'll tell you what's wrong with it on the
       way to a robot, a self-driving car, or any hardware that has to run it
-      for real. Then you can <b>fix it in the workshop</b> and walk out with a
-      deploy-grade <code style="color:#67e8f9;">.onnx</code> file.
+      for real. Then <b style="color:#fbbf24;">fix it in the workshop</b>
+      and walk out with a deploy-grade
+      <code style="color:#67e8f9;">.onnx</code> file.
     </div>
     """,
     unsafe_allow_html=True,
