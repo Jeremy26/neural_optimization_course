@@ -58,98 +58,76 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-      /* ============ PAGE CHROME ============ */
-      .stApp { background: #0a0f1f; }
-      .block-container { padding-top: 2rem; max-width: 1320px; }
-
-      /* ============ TYPOGRAPHY ============
-         Force bright text on dark, no clever gradients (those fade out). */
-      h1, h2, h3, h4, h5, h6,
-      .stMarkdown h1, .stMarkdown h2, .stMarkdown h3,
-      .stMarkdown h4, .stMarkdown h5, .stMarkdown h6 {
-        color: #f8fafc !important;
-        letter-spacing: -0.005em;
+      /* ============ PAGE CHROME ============
+         Light theme by default.  Tab 4 paints itself dark below. */
+      .stApp { background: #f8fafc; }
+      /* Push content below Streamlit's floating toolbar (Deploy button etc.) */
+      .block-container {
+        padding-top: 4rem; max-width: 1320px;
       }
-      h1 { font-size: 2.2rem; font-weight: 800; }
-      h2 { font-size: 1.6rem; font-weight: 800; }
+      [data-testid="stHeader"] {
+        background: rgba(248,250,252,0.85);
+        backdrop-filter: blur(6px);
+      }
+
+      /* ============ TYPOGRAPHY ============ */
+      h1, h2, h3, h4, h5, h6 { color: #0f172a !important; letter-spacing: -0.005em; }
+      h1 { font-size: 2.0rem; font-weight: 800; }
+      h2 { font-size: 1.5rem; font-weight: 800; }
       h3 {
-        font-size: 1.3rem; font-weight: 700;
-        position: relative; padding-left: 14px;
-        margin-top: 1.6rem;
+        font-size: 1.25rem; font-weight: 700;
+        position: relative; padding-left: 14px; margin-top: 1.6rem;
       }
       h3::before {
         content: ""; position: absolute; left: 0; top: 0.2em; bottom: 0.2em;
         width: 4px; border-radius: 2px; background: #f59e0b;
       }
-      h4 {
-        font-size: 1.05rem; font-weight: 700;
-        margin-top: 1.2rem;
-      }
+      h4 { font-size: 1.05rem; font-weight: 700; margin-top: 1.2rem; }
+      .stMarkdown p, .stMarkdown li { color: #334155; }
+      [data-testid="stCaptionContainer"] { color: #64748b; }
 
-      /* Body text contrast */
-      .stMarkdown p, .stMarkdown li { color: #cbd5e1; }
-      [data-testid="stCaptionContainer"] { color: #94a3b8; }
-
-      /* ============ SIDEBAR ============ */
-      [data-testid="stSidebar"] {
-        background: #0f172a;
-        border-right: 1px solid rgba(148,163,184,0.18);
-      }
-      [data-testid="stSidebar"] * { color: #e2e8f0; }
-      [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2,
-      [data-testid="stSidebar"] h3, [data-testid="stSidebar"] h4 {
-        color: #f8fafc !important;
-      }
-
-      /* ============ TABS (console-shelf look) ============ */
+      /* ============ TABS ============ */
       .stTabs [data-baseweb="tab-list"] {
-        gap: 4px;
-        border-bottom: 1px solid rgba(148,163,184,0.18);
+        gap: 4px; border-bottom: 1px solid #e2e8f0;
       }
       .stTabs [data-baseweb="tab"] {
         height: 48px; padding: 0 22px;
-        background: rgba(15,23,42,0.50);
-        border: 1px solid rgba(148,163,184,0.14);
-        border-bottom: none;
+        background: white;
+        border: 1px solid #e2e8f0; border-bottom: none;
         border-radius: 8px 8px 0 0;
-        color: #94a3b8 !important;
+        color: #64748b !important;
         font-weight: 700; font-size: 0.95rem;
       }
       .stTabs [data-baseweb="tab"]:hover {
-        color: #e2e8f0 !important;
-        background: rgba(15,23,42,0.80);
+        color: #0f172a !important; background: #f1f5f9;
       }
       .stTabs [aria-selected="true"] {
-        color: #f8fafc !important;
-        background: rgba(245,158,11,0.10) !important;
-        border-color: rgba(245,158,11,0.50) !important;
+        color: #0f172a !important;
+        background: #fff7ed !important;
+        border-color: #fdba74 !important;
         box-shadow: inset 0 2px 0 #f59e0b;
       }
 
-      /* ============ CARDS ============ */
+      /* ============ CARDS (light) ============ */
       .metric-card {
-        border: 1px solid rgba(148,163,184,0.18);
-        border-radius: 10px;
-        padding: 18px 20px 16px;
-        background: #111827;
+        border: 1px solid #e2e8f0; border-radius: 10px;
+        padding: 18px 20px 16px; background: white;
+        box-shadow: 0 1px 2px rgba(15,23,42,0.04);
       }
       .metric-label {
-        font-size: 0.72rem; color: #94a3b8;
-        text-transform: uppercase; letter-spacing: .14em;
-        font-weight: 700;
+        font-size: 0.72rem; color: #64748b;
+        text-transform: uppercase; letter-spacing: .14em; font-weight: 700;
       }
       .metric-value {
-        font-size: 2.0rem; font-weight: 800; line-height: 1.1;
-        color: #f8fafc;
+        font-size: 2.0rem; font-weight: 800; line-height: 1.1; color: #0f172a;
       }
-      .metric-sub  { font-size: 0.92rem; color: #cbd5e1; margin-top: 4px; }
+      .metric-sub { font-size: 0.92rem; color: #475569; margin-top: 4px; }
 
       /* ============ BADGES ============ */
       .arch-badge {
         display: inline-block; padding: 5px 12px; border-radius: 6px;
-        background: rgba(34,211,238,0.10);
-        border: 1px solid rgba(34,211,238,0.35);
-        color: #67e8f9; font-weight: 700;
+        background: #e0f2fe; border: 1px solid #7dd3fc;
+        color: #075985; font-weight: 700;
         font-size: 0.78rem; letter-spacing: .04em;
         margin-right: 6px; margin-bottom: 4px;
         font-family: ui-monospace, "SF Mono", Menlo, monospace;
@@ -159,64 +137,100 @@ st.markdown(
       .status-pill {
         display: inline-flex; align-items: center; gap: 8px;
         padding: 6px 14px; border-radius: 999px;
-        background: rgba(16,185,129,0.10);
-        border: 1px solid rgba(16,185,129,0.45);
-        color: #6ee7b7; font-size: 0.78rem; font-weight: 700;
+        background: #ecfdf5; border: 1px solid #a7f3d0;
+        color: #047857; font-size: 0.78rem; font-weight: 700;
         letter-spacing: .12em;
         font-family: ui-monospace, "SF Mono", Menlo, monospace;
       }
       .status-pill::before {
         content: ""; width: 8px; height: 8px; border-radius: 50%;
-        background: #10b981;
-        box-shadow: 0 0 8px #10b981;
+        background: #10b981; box-shadow: 0 0 8px #10b981;
         animation: pulse 1.6s ease-in-out infinite;
       }
-      @keyframes pulse {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.5; }
-      }
+      @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .5; } }
 
       /* ============ BUTTONS ============ */
       .stButton > button[kind="primary"] {
-        background: #f59e0b !important;
-        border: 1px solid #b45309;
+        background: #f59e0b !important; border: 1px solid #b45309;
         color: #0c0a09 !important; font-weight: 800;
         letter-spacing: .04em; text-transform: uppercase;
       }
-      .stButton > button[kind="primary"]:hover {
-        background: #fbbf24 !important;
-      }
-      .stButton > button[kind="secondary"] {
-        background: rgba(15,23,42,0.80);
-        border: 1px solid rgba(148,163,184,0.30);
-        color: #e2e8f0; font-weight: 700;
-        letter-spacing: .04em;
-      }
+      .stButton > button[kind="primary"]:hover { background: #fbbf24 !important; }
       .stDownloadButton > button {
-        background: rgba(34,211,238,0.12);
-        border: 1px solid rgba(34,211,238,0.50);
-        color: #67e8f9 !important; font-weight: 800;
+        background: #ecfeff; border: 1px solid #67e8f9;
+        color: #0e7490 !important; font-weight: 800;
         letter-spacing: .04em; text-transform: uppercase;
       }
-      .stDownloadButton > button:hover {
-        background: rgba(34,211,238,0.20);
-      }
+      .stDownloadButton > button:hover { background: #cffafe; }
 
-      /* ============ MISC ============ */
-      hr { border-color: rgba(148,163,184,0.18); }
+      /* ============ INLINE CODE ============ */
       [data-testid="stMarkdownContainer"] code {
-        background: rgba(34,211,238,0.10);
-        border: 1px solid rgba(34,211,238,0.25);
+        background: #ecfeff; border: 1px solid #a5f3fc;
         border-radius: 4px; padding: 1px 6px;
-        color: #67e8f9; font-size: 0.88em;
+        color: #0e7490; font-size: 0.88em;
         font-family: ui-monospace, "SF Mono", Menlo, monospace;
       }
-      [data-testid="stFileUploaderDropzone"] {
-        background: #111827;
-        border: 2px dashed rgba(148,163,184,0.30);
+
+      /* =================================================================
+         WORKSHOP ZONE -- target the 4th tab panel only.
+         Streamlit renders all tab panels in the DOM; nth-of-type(4) is the
+         Optimization tab.  Everything inside flips to dark.
+         ================================================================= */
+      .stTabs [role="tabpanel"]:nth-of-type(4) {
+        background:
+          radial-gradient(800px 400px at 0% 0%, rgba(245,158,11,0.10), transparent 60%),
+          radial-gradient(800px 400px at 100% 0%, rgba(34,211,238,0.08), transparent 60%),
+          #0a0f1f;
+        background-image:
+          linear-gradient(rgba(148,163,184,0.06) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(148,163,184,0.06) 1px, transparent 1px),
+          linear-gradient(180deg, #0a0f1f 0%, #060914 100%);
+        background-size: 36px 36px, 36px 36px, 100% 100%;
+        border: 1px solid #1f2937;
+        border-top: 2px solid #f59e0b;
+        border-radius: 0 0 14px 14px;
+        padding: 28px 28px 32px;
+        margin-top: -1px;
       }
-      [data-testid="stFileUploaderDropzone"]:hover {
-        border-color: rgba(245,158,11,0.55);
+      .stTabs [role="tabpanel"]:nth-of-type(4) h1,
+      .stTabs [role="tabpanel"]:nth-of-type(4) h2,
+      .stTabs [role="tabpanel"]:nth-of-type(4) h3,
+      .stTabs [role="tabpanel"]:nth-of-type(4) h4 {
+        color: #f8fafc !important;
+      }
+      .stTabs [role="tabpanel"]:nth-of-type(4) h3::before {
+        background: #f59e0b;
+      }
+      .stTabs [role="tabpanel"]:nth-of-type(4) .stMarkdown p,
+      .stTabs [role="tabpanel"]:nth-of-type(4) .stMarkdown li,
+      .stTabs [role="tabpanel"]:nth-of-type(4) [data-testid="stCaptionContainer"] {
+        color: #cbd5e1;
+      }
+      .stTabs [role="tabpanel"]:nth-of-type(4) .metric-card {
+        background: #111827;
+        border-color: rgba(148,163,184,0.18);
+        box-shadow: none;
+      }
+      .stTabs [role="tabpanel"]:nth-of-type(4) .metric-label { color: #94a3b8; }
+      .stTabs [role="tabpanel"]:nth-of-type(4) .metric-value { color: #f8fafc; }
+      .stTabs [role="tabpanel"]:nth-of-type(4) .metric-sub   { color: #cbd5e1; }
+      .stTabs [role="tabpanel"]:nth-of-type(4) [data-testid="stMarkdownContainer"] code {
+        background: rgba(34,211,238,0.10);
+        border: 1px solid rgba(34,211,238,0.30);
+        color: #67e8f9;
+      }
+      .stTabs [role="tabpanel"]:nth-of-type(4) .stAlert {
+        background: rgba(34,211,238,0.06);
+        border: 1px solid rgba(34,211,238,0.30);
+        color: #cbd5e1;
+      }
+      .stTabs [role="tabpanel"]:nth-of-type(4) [data-testid="stExpander"] {
+        background: #111827;
+        border: 1px solid rgba(148,163,184,0.18);
+      }
+      .stTabs [role="tabpanel"]:nth-of-type(4) [data-testid="stExpander"] summary,
+      .stTabs [role="tabpanel"]:nth-of-type(4) [data-testid="stExpander"] p {
+        color: #e2e8f0 !important;
       }
     </style>
     """,
@@ -320,10 +334,12 @@ def _score_card(
 
 
 def _problem_callout(p) -> None:
+    # accent / bg / border tuned for a light page so the tinted cards stay
+    # readable without competing with the surrounding content.
     color_map = {
-        "critical": ("#ef4444", "rgba(239,68,68,0.10)", "rgba(239,68,68,0.35)"),
-        "warning":  ("#f59e0b", "rgba(245,158,11,0.10)", "rgba(245,158,11,0.35)"),
-        "info":     ("#38bdf8", "rgba(56,189,248,0.10)", "rgba(56,189,248,0.35)"),
+        "critical": ("#b91c1c", "#fef2f2", "#fca5a5"),
+        "warning":  ("#b45309", "#fffbeb", "#fcd34d"),
+        "info":     ("#0369a1", "#f0f9ff", "#7dd3fc"),
     }
     accent, bg, border = color_map.get(p.severity, color_map["info"])
     severity_label = {"critical": "CRITICAL",
@@ -336,8 +352,8 @@ def _problem_callout(p) -> None:
           <div style="font-size:0.7rem;letter-spacing:.14em;font-weight:800;
                        color:{accent};margin-bottom:6px;">{severity_label}</div>
           <div style="font-size:1.1rem;font-weight:700;line-height:1.3;
-                       margin-bottom:6px;">{p.headline}</div>
-          <div style="font-size:0.92rem;color:#cbd5e1;line-height:1.5;">
+                       margin-bottom:6px;color:#0f172a;">{p.headline}</div>
+          <div style="font-size:0.92rem;color:#334155;line-height:1.5;">
             {p.detail}
           </div>
         </div>
@@ -367,29 +383,28 @@ st.markdown(
                      display:flex;align-items:center;justify-content:center;
                      font-family:ui-monospace,monospace;font-weight:900;
                      font-size:1.5rem;color:#0c0a09;
-                     box-shadow:0 0 20px rgba(245,158,11,0.35);">
+                     box-shadow:0 6px 14px rgba(245,158,11,0.35);">
           ⌬
         </div>
         <div>
           <div style="font-size:0.72rem;letter-spacing:.18em;
-                       color:#94a3b8;font-weight:700;">
+                       color:#64748b;font-weight:700;">
             DEPLOYMENT QUALIFICATION TERMINAL
           </div>
           <div style="font-size:2.0rem;font-weight:800;line-height:1.1;
-                       margin-top:2px;color:#f8fafc;">
+                       margin-top:2px;color:#0f172a;">
             Deploy/X &nbsp;·&nbsp; Model Health Audit
           </div>
         </div>
       </div>
       <div class="status-pill">SYSTEM ONLINE</div>
     </div>
-    <div style="font-size:0.98rem;color:#cbd5e1;line-height:1.55;
+    <div style="font-size:0.98rem;color:#334155;line-height:1.55;
                  max-width:820px;margin-bottom:8px;">
       Drop a PyTorch checkpoint and we'll tell you what's wrong with it on the
       way to a robot, a self-driving car, or any hardware that has to run it
-      for real. Then <b style="color:#fbbf24;">fix it in the workshop</b>
-      and walk out with a deploy-grade
-      <code style="color:#67e8f9;">.onnx</code> file.
+      for real. Then <b style="color:#b45309;">fix it in the workshop</b>
+      and walk out with a deploy-grade <code>.onnx</code> file.
     </div>
     """,
     unsafe_allow_html=True,
@@ -398,20 +413,19 @@ st.markdown(
 with st.sidebar:
     st.markdown(
         """
-        <div style="border:1px solid rgba(56,189,248,0.35);
+        <div style="border:1px solid #7dd3fc;
                      border-radius:14px; padding:18px;
-                     background:linear-gradient(160deg, rgba(56,189,248,0.10),
-                                                rgba(15,23,42,0.0));">
+                     background:#f0f9ff;">
           <div style="font-size:0.75rem;letter-spacing:.12em;
-                       text-transform:uppercase;color:#38bdf8;
+                       text-transform:uppercase;color:#0369a1;
                        font-weight:700;margin-bottom:6px;">
             Neural Network Optimization
           </div>
           <div style="font-size:1.15rem;font-weight:700;line-height:1.25;
-                       margin-bottom:10px;">
+                       margin-bottom:10px;color:#0f172a;">
             From training engineer to deployment engineer.
           </div>
-          <div style="font-size:0.92rem;color:#cbd5e1;line-height:1.55;">
+          <div style="font-size:0.92rem;color:#334155;line-height:1.55;">
             This audit shows you <i>what's wrong</i>. The course turns you
             into the engineer who <b>ships</b> -- on real hardware, in real
             robots and vehicles, end to end.
@@ -574,23 +588,23 @@ with tab_about:
             f"""
             <div class="metric-card" style="padding:22px 24px;">
               <div class="metric-label">Architecture</div>
-              <div style="font-size:1.6rem;font-weight:800;color:#38bdf8;
+              <div style="font-size:1.6rem;font-weight:800;color:#0369a1;
                            margin:4px 0 14px;line-height:1.1;">
                 {arch_label}
               </div>
               <div style="display:grid;grid-template-columns:120px 1fr;
-                           gap:6px 14px;font-size:0.92rem;color:#cbd5e1;">
-                <div style="color:#94a3b8;">Likely task</div>
+                           gap:6px 14px;font-size:0.92rem;color:#1e293b;">
+                <div style="color:#64748b;">Likely task</div>
                 <div><b>{passport.likely_task}</b></div>
-                <div style="color:#94a3b8;">Trained on</div>
+                <div style="color:#64748b;">Trained on</div>
                 <div>{passport.likely_dataset or "Unknown / custom dataset"}</div>
-                <div style="color:#94a3b8;">Parameters</div>
+                <div style="color:#64748b;">Parameters</div>
                 <div>{stats.parameter_count / 1e6:.2f}M</div>
-                <div style="color:#94a3b8;">Layers</div>
+                <div style="color:#64748b;">Layers</div>
                 <div>{stats.leaf_modules}</div>
-                <div style="color:#94a3b8;">On disk</div>
+                <div style="color:#64748b;">On disk</div>
                 <div>{report.file_size_mb:.1f} MB</div>
-                <div style="color:#94a3b8;">Compute</div>
+                <div style="color:#64748b;">Compute</div>
                 <div>~{_format_flops(report.estimated_flops or 0)} per forward</div>
               </div>
             </div>
@@ -610,7 +624,7 @@ with tab_about:
         sample_html = ""
         if passport.sample_classes:
             sample_html = (
-                "<div style='font-size:0.85rem;color:#94a3b8;"
+                "<div style='font-size:0.85rem;color:#64748b;"
                 "margin-top:10px;'>Likely outputs include: "
                 + ", ".join(f"<i>{c}</i>" for c in passport.sample_classes)
                 + ", ...</div>"
@@ -622,35 +636,35 @@ with tab_about:
               <div style="display:flex;align-items:center;gap:14px;
                            margin:18px 0;">
                 <div style="flex:1;text-align:center;">
-                  <div style="font-size:0.72rem;color:#94a3b8;
+                  <div style="font-size:0.72rem;color:#64748b;
                                letter-spacing:.1em;">INPUT</div>
                   <div style="font-size:1.05rem;font-weight:700;
-                               color:#86efac;margin:4px 0;">
+                               color:#047857;margin:4px 0;">
                     {passport.input_description}
                   </div>
-                  <div style="font-size:0.78rem;color:#64748b;
+                  <div style="font-size:0.78rem;color:#475569;
                                font-family:ui-monospace,monospace;">
                     [{in_dim_str}]
                   </div>
                 </div>
-                <div style="font-size:1.4rem;color:#38bdf8;">→</div>
+                <div style="font-size:1.4rem;color:#0369a1;">→</div>
                 <div style="flex:0 0 auto;font-size:0.72rem;
-                             color:#38bdf8;letter-spacing:.1em;
+                             color:#0369a1;letter-spacing:.1em;
                              font-weight:800;
                              padding:6px 12px;border-radius:8px;
-                             background:rgba(56,189,248,0.10);
-                             border:1px solid rgba(56,189,248,0.30);">
+                             background:#e0f2fe;
+                             border:1px solid #7dd3fc;">
                   {arch_label}
                 </div>
-                <div style="font-size:1.4rem;color:#38bdf8;">→</div>
+                <div style="font-size:1.4rem;color:#0369a1;">→</div>
                 <div style="flex:1;text-align:center;">
-                  <div style="font-size:0.72rem;color:#94a3b8;
+                  <div style="font-size:0.72rem;color:#64748b;
                                letter-spacing:.1em;">OUTPUT</div>
                   <div style="font-size:1.05rem;font-weight:700;
-                               color:#fca5a5;margin:4px 0;">
+                               color:#b91c1c;margin:4px 0;">
                     {passport.output_description}
                   </div>
-                  <div style="font-size:0.78rem;color:#64748b;
+                  <div style="font-size:0.78rem;color:#475569;
                                font-family:ui-monospace,monospace;">
                     [{out_dim_str}]
                   </div>
@@ -687,23 +701,23 @@ with tab_about:
               <div class="metric-label">Carry weight</div>
               <div style="margin-top:14px;">
                 <div style="display:flex;justify-content:space-between;
-                             font-size:0.82rem;color:#94a3b8;margin-bottom:4px;">
-                  <span>Today</span><span><b style='color:#fca5a5;'>{stats.fp32_mb:.0f} MB</b></span>
+                             font-size:0.82rem;color:#64748b;margin-bottom:4px;">
+                  <span>Today</span><span><b style='color:#b91c1c;'>{stats.fp32_mb:.0f} MB</b></span>
                 </div>
                 <div style="height:18px;border-radius:6px;
-                             background:rgba(239,68,68,0.20);
-                             border:1px solid rgba(239,68,68,0.45);
+                             background:#fee2e2;
+                             border:1px solid #fca5a5;
                              margin-bottom:18px;"></div>
                 <div style="display:flex;justify-content:space-between;
-                             font-size:0.82rem;color:#94a3b8;margin-bottom:4px;">
-                  <span>Deploy-grade</span><span><b style='color:#86efac;'>{slim_mb:.0f} MB</b></span>
+                             font-size:0.82rem;color:#64748b;margin-bottom:4px;">
+                  <span>Deploy-grade</span><span><b style='color:#15803d;'>{slim_mb:.0f} MB</b></span>
                 </div>
                 <div style="height:18px;border-radius:6px;
-                             background:rgba(148,163,184,0.12);position:relative;">
+                             background:#f1f5f9;position:relative;">
                   <div style="position:absolute;left:0;top:0;bottom:0;
                                width:{slim_pct}%;border-radius:6px;
-                               background:rgba(22,163,74,0.40);
-                               border:1px solid rgba(22,163,74,0.55);"></div>
+                               background:#bbf7d0;
+                               border:1px solid #86efac;"></div>
                 </div>
               </div>
             </div>
@@ -721,7 +735,7 @@ with tab_about:
                                                   flex-direction:column;
                                                   justify-content:center;">
                   <div class="metric-label">Heaviest single piece</div>
-                  <div style="font-size:2rem;font-weight:800;color:#38bdf8;
+                  <div style="font-size:2rem;font-weight:800;color:#0369a1;
                                line-height:1;margin:8px 0 6px;">
                     {share:.0%}
                   </div>
@@ -786,14 +800,18 @@ with tab_deployment:
         "safety margin against the budget."
     )
     scenarios = build_scenarios(report)
+    # (accent_text, deep_text, bg, border) per severity -- chosen so the card
+    # stays readable on a white page even with a translucent tint.
     verdict_color = {
-        "good": ("#16a34a", "rgba(22,163,74,0.10)", "rgba(22,163,74,0.40)"),
-        "warning": ("#f59e0b", "rgba(245,158,11,0.10)", "rgba(245,158,11,0.40)"),
-        "critical": ("#ef4444", "rgba(239,68,68,0.10)", "rgba(239,68,68,0.40)"),
+        "good":     ("#15803d", "#14532d", "#f0fdf4", "#86efac"),
+        "warning":  ("#b45309", "#78350f", "#fffbeb", "#fcd34d"),
+        "critical": ("#b91c1c", "#7f1d1d", "#fef2f2", "#fca5a5"),
     }
     scen_cols = st.columns(2)
     for i, scen in enumerate(scenarios):
-        accent, bg, border = verdict_color.get(scen.severity, verdict_color["warning"])
+        accent, deep, bg, border = verdict_color.get(
+            scen.severity, verdict_color["warning"]
+        )
         with scen_cols[i % 2]:
             st.markdown(
                 f"""
@@ -815,31 +833,30 @@ with tab_deployment:
                                      color:{accent};font-weight:800;">
                           {scen.setting.upper()}
                         </div>
-                        <div style="font-size:0.85rem;color:#94a3b8;
+                        <div style="font-size:0.85rem;color:#475569;
                                      margin-top:2px;">
                           {scen.target}
                         </div>
                       </div>
                     </div>
                     <div style="font-size:0.72rem;letter-spacing:.12em;
-                                 font-weight:800;color:{accent};
-                                 background:{bg};
-                                 border:1px solid {border};
+                                 font-weight:800;color:white;
+                                 background:{accent};
                                  padding:4px 11px;border-radius:999px;
                                  flex-shrink:0;">
                       {scen.verdict.upper()}
                     </div>
                   </div>
-                  <div style="font-size:0.98rem;font-style:italic;color:#e2e8f0;
+                  <div style="font-size:0.98rem;font-style:italic;color:{deep};
                                margin-bottom:12px;line-height:1.45;">
                     "{scen.hook}"
                   </div>
-                  <div style="font-size:0.92rem;color:#cbd5e1;line-height:1.55;
+                  <div style="font-size:0.92rem;color:#1e293b;line-height:1.55;
                                margin-bottom:8px;">
-                    <b style="color:#fca5a5;">Today:</b> {scen.today_line}
+                    <b style="color:#b91c1c;">Today:</b> {scen.today_line}
                   </div>
-                  <div style="font-size:0.92rem;color:#cbd5e1;line-height:1.55;">
-                    <b style="color:#86efac;">Optimized:</b> {scen.optimized_line}
+                  <div style="font-size:0.92rem;color:#1e293b;line-height:1.55;">
+                    <b style="color:#15803d;">Optimized:</b> {scen.optimized_line}
                   </div>
                 </div>
                 """,

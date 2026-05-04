@@ -1,12 +1,8 @@
-# Force dark theme at the framework level so the sidebar, widgets,
-# and chrome all start dark instead of fighting our injected CSS.
+# Default to Streamlit's light theme.  Tab 4 paints itself dark via CSS
+# so the workshop zone reads as a different room of the factory.
 [theme]
-base = "dark"
+base = "light"
 primaryColor = "#f59e0b"
-backgroundColor = "#0a0f1f"
-secondaryBackgroundColor = "#111827"
-textColor = "#e2e8f0"
-font = "sans serif"
 
 [server]
 headless = false
