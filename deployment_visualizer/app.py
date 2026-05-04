@@ -17,6 +17,7 @@ import streamlit as st
 
 from analyzer import analyze, attach_benchmarks
 from problems import detect_problems
+from scenarios import build_scenarios
 import viz
 
 
@@ -484,6 +485,73 @@ else:
     st.info(
         "Run the live benchmarks below to enable device latency estimates "
         "(needs FLOP count from a real forward pass)."
+    )
+
+# ---------------------------------------------------------------------------
+# If this shipped today -- deployment narratives
+# ---------------------------------------------------------------------------
+
+st.markdown("### If this shipped today...")
+st.caption(
+    "Concrete deployment scenarios for your model, as-is. Numbers are "
+    "estimates -- but the order of magnitude is what teams actually live with."
+)
+
+scenarios = build_scenarios(report)
+verdict_color = {
+    "good": ("#16a34a", "rgba(22,163,74,0.10)", "rgba(22,163,74,0.40)"),
+    "warning": ("#f59e0b", "rgba(245,158,11,0.10)", "rgba(245,158,11,0.40)"),
+    "critical": ("#ef4444", "rgba(239,68,68,0.10)", "rgba(239,68,68,0.40)"),
+}
+
+# Two columns of scenario cards.
+scen_cols = st.columns(2)
+for i, scen in enumerate(scenarios):
+    accent, bg, border = verdict_color.get(scen.severity, verdict_color["warning"])
+    with scen_cols[i % 2]:
+        st.markdown(
+            f"""
+            <div style="border:1px solid {border};background:{bg};
+                         border-radius:14px;padding:18px 22px;
+                         margin-bottom:12px;">
+              <div style="display:flex;justify-content:space-between;
+                           align-items:center;margin-bottom:8px;">
+                <div style="font-size:0.72rem;letter-spacing:.14em;
+                             color:{accent};font-weight:800;">
+                  {scen.setting.upper()}
+                </div>
+                <div style="font-size:0.72rem;letter-spacing:.12em;
+                             font-weight:800;color:{accent};
+                             background:{bg};
+                             border:1px solid {border};
+                             padding:3px 10px;border-radius:999px;">
+                  {scen.verdict.upper()}
+                </div>
+              </div>
+              <div style="font-size:0.85rem;color:#94a3b8;
+                           margin-bottom:10px;">
+                {scen.target}
+              </div>
+              <div style="font-size:0.98rem;font-style:italic;color:#e2e8f0;
+                           margin-bottom:12px;line-height:1.45;">
+                "{scen.hook}"
+              </div>
+              <div style="font-size:0.92rem;color:#cbd5e1;line-height:1.55;
+                           margin-bottom:8px;">
+                <b style="color:#fca5a5;">Today:</b> {scen.today_line}
+              </div>
+              <div style="font-size:0.92rem;color:#cbd5e1;line-height:1.55;">
+                <b style="color:#86efac;">Optimized:</b> {scen.optimized_line}
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+if not any("FPS" in s.target or "req" in s.target for s in scenarios):
+    st.caption(
+        "Run live benchmarks below to unlock the latency-based scenarios "
+        "(robot, phone AR, cloud throughput)."
     )
 
 # ---------------------------------------------------------------------------
