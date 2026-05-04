@@ -73,7 +73,9 @@ class AnalysisReport:
     deployment_health_score: float
     overall_verdict: str
     recommendations: list[str]
-    dynamic: Any = None  # benchmarks.DynamicReport, optional
+    architecture: str | None = None
+    estimated_flops: int | None = None
+    dynamic: Any = None  # benchmarks.DynamicReport, optional (currently unused)
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -532,6 +534,14 @@ def analyze(buffer: bytes, run_benchmarks: bool = False) -> tuple[AnalysisReport
     overall = _verdict_for_score(score)
 
     parameter_count = sum(t.numel() for _, t in tensors)
+
+    # Static fingerprint + FLOPs estimate -- no forward pass required.
+    from benchmarks import fingerprint
+    from device_estimates import estimate_static_flops
+
+    arch = fingerprint(obj)
+    flops_estimate = estimate_static_flops(parameter_count, arch)
+
     report = AnalysisReport(
         file_size_mb=file_size_mb,
         parameter_count=parameter_count,
@@ -544,6 +554,8 @@ def analyze(buffer: bytes, run_benchmarks: bool = False) -> tuple[AnalysisReport
         recommendations=_build_recommendations(
             precision, pruning, size, exportability
         ),
+        architecture=arch,
+        estimated_flops=flops_estimate,
         dynamic=dynamic,
         raw={"load_mode": load_mode, "is_module": isinstance(obj, nn.Module)},
     )

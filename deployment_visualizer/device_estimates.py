@@ -130,6 +130,37 @@ def network_stats(obj: Any) -> NetworkStats:
     )
 
 
+def estimate_static_flops(parameter_count: int, architecture: str | None) -> int:
+    """Rough FLOP-per-forward estimate from param count + architecture hint.
+
+    Works without a forward pass, so we can show latency / scenario numbers
+    on bare state-dicts.  The ratios come from published benchmarks for
+    canonical inputs (224x224 for vision, 64-128 tokens for language)::
+
+        ResNet18  ~ 11.7M params -> 1.8 GFLOPs   (~155 FLOPs/param)
+        ResNet50  ~ 25.6M params -> 4.1 GFLOPs   (~160 FLOPs/param)
+        MobileNet ~ 3.5M params  -> 0.6 GFLOPs   (~170 FLOPs/param)
+        ViT-B/16  ~ 86M params   -> 17.6 GFLOPs  (~205 FLOPs/param)
+        BERT-Base ~ 110M params  -> 22.5 GFLOPs  (~205 FLOPs/param @ 128 tokens)
+
+    Numbers vary by input size; we pick a single ratio per family.
+    """
+    arch = (architecture or "").lower()
+    if any(t in arch for t in ("transformer", "bert", "gpt", "vit", "llama")):
+        ratio = 200
+    elif any(t in arch for t in ("resnet", "vgg", "densenet", "convnext", "yolo")):
+        ratio = 160
+    elif any(t in arch for t in ("mobilenet", "efficientnet")):
+        ratio = 170
+    elif "unet" in arch:
+        ratio = 180
+    else:
+        # Generic vision-ish default; over-estimates LLMs and under-estimates
+        # tiny models, but produces plausible ballparks.
+        ratio = 160
+    return int(parameter_count * ratio)
+
+
 def estimate_latency_ms(flops: int, dtype: str = "fp16") -> list[dict]:
     """Per-device theoretical latency for a single forward pass.
 

@@ -15,55 +15,34 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from analyzer import analyze, attach_benchmarks
+from analyzer import analyze
+from compatibility import compute_compatibility
 from problems import detect_problems
 from scenarios import build_scenarios
 import viz
 
 
-# Pro features (live benchmarks, what-if simulations, action plans).
-# Default is unlocked for admin/dev use; set ``DEPLOYMENT_VIZ_FREE=1`` to
-# preview what the free tier looks like before we split into two files.
-PRO = os.getenv("DEPLOYMENT_VIZ_FREE", "0") != "1"
 COURSE_URL = "https://www.thinkautonomous.ai/"
 
 
-def _locked_card(title: str, body: str, preview_bullets: list[str]) -> None:
-    bullets_html = "".join(
-        f"<li style='margin:4px 0;color:#cbd5e1;'>{b}</li>"
-        for b in preview_bullets
-    )
+def _compat_card(family) -> None:
+    color = _score_color(family.score)
     st.markdown(
         f"""
-        <div style="position:relative;border:1px dashed rgba(56,189,248,0.45);
-                     border-radius:14px;padding:22px 22px 18px;
-                     background:linear-gradient(160deg, rgba(56,189,248,0.08),
-                                                rgba(15,23,42,0.0));
-                     margin-bottom:8px;">
-          <div style="position:absolute;top:14px;right:18px;
-                       background:rgba(56,189,248,0.18);color:#38bdf8;
-                       padding:3px 10px;border-radius:999px;
-                       font-size:0.72rem;font-weight:700;letter-spacing:.1em;">
-            PRO
+        <div class="metric-card" style="height:100%;">
+          <div class="metric-label">{family.name}</div>
+          <div style="display:flex;align-items:baseline;gap:6px;
+                       margin:6px 0 8px;">
+            <div style="font-size:2rem;font-weight:800;color:{color};
+                         line-height:1;">{family.score:.0f}</div>
+            <div style="font-size:0.8rem;color:#64748b;">/ 100</div>
           </div>
-          <div style="font-size:1.15rem;font-weight:700;margin-bottom:4px;">
-            {title}
+          <div class="metric-sub" style="font-size:0.88rem;">
+            {family.verdict}
           </div>
-          <div style="font-size:0.92rem;color:#cbd5e1;margin-bottom:10px;">
-            {body}
-          </div>
-          <ul style="margin:0 0 14px 18px;padding:0;font-size:0.9rem;">
-            {bullets_html}
-          </ul>
         </div>
         """,
         unsafe_allow_html=True,
-    )
-    st.link_button(
-        "Unlock with the course",
-        COURSE_URL,
-        type="primary",
-        use_container_width=False,
     )
 
 
@@ -307,7 +286,7 @@ ss = st.session_state
 if ss.get("file_hash") != file_hash:
     with st.spinner("Loading & analyzing checkpoint..."):
         try:
-            report, load_mode, obj = analyze(buffer, run_benchmarks=False)
+            report, load_mode, obj = analyze(buffer)
         except Exception as exc:  # noqa: BLE001
             st.error(f"Could not load this checkpoint: {exc}")
             st.stop()
@@ -315,7 +294,6 @@ if ss.get("file_hash") != file_hash:
     ss["report"] = report
     ss["load_mode"] = load_mode
     ss["obj"] = obj
-    ss["benchmarks_done"] = False
 
 report = ss["report"]
 load_mode = ss["load_mode"]
@@ -339,16 +317,16 @@ with hero_left:
 with hero_right:
     st.markdown("##### Deployment Health Score")
     st.markdown(f"### {report.overall_verdict}")
-    arch = report.dynamic.architecture_guess if report.dynamic else None
+    arch = report.architecture
     badges = [
         f"<span class='arch-badge'>{report.parameter_count / 1e6:.2f}M params</span>",
         f"<span class='arch-badge'>{report.file_size_mb:.1f} MB on disk</span>",
     ]
     if arch:
         badges.insert(0, f"<span class='arch-badge'>Looks like: {arch}</span>")
-    if report.dynamic and report.dynamic.flops:
+    if report.estimated_flops:
         badges.append(
-            f"<span class='arch-badge'>{_format_flops(report.dynamic.flops)}</span>"
+            f"<span class='arch-badge'>~{_format_flops(report.estimated_flops)}</span>"
         )
     st.markdown(" ".join(badges), unsafe_allow_html=True)
 
@@ -439,9 +417,15 @@ with kind_right:
 # Device latency estimate -- compute statically on FLOPs (when available).
 # ---------------------------------------------------------------------------
 
-flops = ss["report"].dynamic.flops if (ss["report"].dynamic and ss["report"].dynamic.flops) else None
+flops = report.estimated_flops
 if flops:
-    st.markdown("#### Estimated single-pass latency on common targets")
+    st.markdown("#### Estimated latency on common targets")
+    st.caption(
+        f"Based on ~{flops / 1e9:.2f} GFLOPs (estimated from "
+        f"{report.parameter_count / 1e6:.1f}M params, "
+        f"{report.architecture or 'generic'} ratio). "
+        "Real batch=1 latency typically runs 2-5x slower than peak-FLOPS theoretical."
+    )
     dtype_choice = st.radio(
         "Inference precision",
         options=["fp32", "fp16", "int8"],
@@ -475,17 +459,21 @@ if flops:
             "throughput": "Throughput",
         },
     )
-    st.caption(
-        f"Theoretical estimates from {flops/1e9:.2f} GFLOPs at "
-        f"{dtype_choice.upper()}. Real batch=1 latency is typically 2-5x "
-        "slower due to kernel-launch overhead; the course covers how to "
-        "close that gap."
-    )
-else:
-    st.info(
-        "Run the live benchmarks below to enable device latency estimates "
-        "(needs FLOP count from a real forward pass)."
-    )
+
+# ---------------------------------------------------------------------------
+# Deployment compatibility -- runtime-by-runtime readiness
+# ---------------------------------------------------------------------------
+
+st.markdown("### Deployment compatibility")
+st.caption(
+    "Each runtime is its own world: ONNX, TensorRT, CUDA FP16, INT8 quant, "
+    "Jetson DLA, Apple CoreML. Here's how your model would land on each."
+)
+families = compute_compatibility(report)
+fam_cols = st.columns(3)
+for i, fam in enumerate(families):
+    with fam_cols[i % 3]:
+        _compat_card(fam)
 
 # ---------------------------------------------------------------------------
 # If this shipped today -- deployment narratives
@@ -548,11 +536,6 @@ for i, scen in enumerate(scenarios):
             unsafe_allow_html=True,
         )
 
-if not any("FPS" in s.target or "req" in s.target for s in scenarios):
-    st.caption(
-        "Run live benchmarks below to unlock the latency-based scenarios "
-        "(robot, phone AR, cloud throughput)."
-    )
 
 # ---------------------------------------------------------------------------
 # Problems detected -- damning quantified callouts
@@ -579,184 +562,6 @@ with cols[3]:
     _score_card(
         "Exportability", report.exportability.score, report.exportability.verdict
     )
-
-# ---------------------------------------------------------------------------
-# Live benchmarks (opt-in -- they're slow on big models)
-# ---------------------------------------------------------------------------
-
-if not PRO:
-    st.markdown("### Live benchmarks & what-if simulations")
-    _locked_card(
-        title="See exactly what optimization will buy you -- before you do it.",
-        body=(
-            "We run your model under realistic conditions and simulate the "
-            "transforms the course teaches, so you know which moves are "
-            "worth your time."
-        ),
-        preview_bullets=[
-            "Real CPU latency (mean + p95) and peak activation memory",
-            "FLOP count + per-layer cost breakdown",
-            "Actual ONNX export attempt -- pass / fail with the real error",
-            "INT8 quantization simulation: projected size + output drift",
-            "Magnitude pruning at 30 / 50 / 70%: projected savings + drift",
-        ],
-    )
-
-if PRO and not ss.get("benchmarks_done") and report.dynamic is None:
-    st.markdown("### Live benchmarks")
-    is_module = report.raw.get("is_module", False)
-    if is_module:
-        if st.button(
-            "Run live benchmarks", type="primary",
-            help=(
-                "Runs a real forward pass, attempts ONNX export, and simulates "
-                "INT8 quantization + magnitude pruning. Takes ~5s on small "
-                "models, up to a minute on large ones."
-            ),
-        ):
-            with st.spinner("Benchmarking..."):
-                ss["report"] = attach_benchmarks(ss["report"], ss["obj"])
-                ss["benchmarks_done"] = True
-            st.rerun()
-    else:
-        # State-dict path: let the user pick a torchvision architecture so we
-        # can instantiate it, load the weights in, and benchmark for real.
-        from benchmarks import available_architectures, try_load_into_arch
-
-        archs = available_architectures()
-        if not archs:
-            st.info(
-                "Live benchmarks need either a full ``nn.Module`` or "
-                "``torchvision`` installed (it isn't). Install torchvision "
-                "and re-run, or save with ``torch.save(model, ...)``."
-            )
-        else:
-            # Pre-select from the fingerprint where possible.
-            fingerprint = (
-                report.dynamic.architecture_guess if report.dynamic else None
-            )
-            default_idx = 0
-            for i, name in enumerate(archs):
-                if fingerprint and name.startswith(fingerprint):
-                    default_idx = i
-                    break
-            st.markdown(
-                "This file is a state-dict only. Pick the matching "
-                "architecture and we'll load the weights into a fresh "
-                "torchvision model so we can benchmark it for real:"
-            )
-            arch_choice = st.selectbox(
-                "Architecture", archs, index=default_idx,
-                label_visibility="collapsed",
-            )
-            if st.button("Load & run live benchmarks", type="primary"):
-                with st.spinner(f"Loading weights into {arch_choice}..."):
-                    module, err = try_load_into_arch(ss["obj"], arch_choice)
-                if err:
-                    st.error(err)
-                else:
-                    with st.spinner("Benchmarking..."):
-                        ss["obj"] = module
-                        ss["report"] = attach_benchmarks(ss["report"], module)
-                        ss["benchmarks_done"] = True
-                    st.rerun()
-
-dyn = ss["report"].dynamic if PRO else None
-report = ss["report"]
-if dyn is not None:
-    st.markdown("### Live benchmarks")
-    for note in dyn.notes:
-        st.info(note)
-    if dyn.input_shape is not None:
-        b1, b2, b3, b4 = st.columns(4)
-        b1.metric(
-            "Latency (mean)",
-            f"{dyn.latency_ms_mean:.2f} ms" if dyn.latency_ms_mean else "n/a",
-        )
-        b2.metric(
-            "Latency (p95)",
-            f"{dyn.latency_ms_p95:.2f} ms" if dyn.latency_ms_p95 else "n/a",
-        )
-        b3.metric(
-            "Peak activations",
-            f"{dyn.peak_activation_mb:.1f} MB" if dyn.peak_activation_mb else "n/a",
-        )
-        b4.metric(
-            "FLOPs / forward",
-            _format_flops(dyn.flops) if dyn.flops else "n/a",
-        )
-        st.caption(
-            f"Run on CPU with dummy input shape {tuple(dyn.input_shape)}. "
-            "Latency varies with hardware -- relative comparisons are what matter."
-        )
-
-    # ONNX export attempt
-    if dyn.onnx_export is not None:
-        if dyn.onnx_export["ok"]:
-            st.success(
-                f"Real ONNX export succeeded -- {dyn.onnx_export['size_mb']:.1f} MB "
-                f"at opset {dyn.onnx_export['opset']}."
-            )
-        else:
-            st.error(f"ONNX export failed: {dyn.onnx_export['error']}")
-
-# ---------------------------------------------------------------------------
-# What-if simulations
-# ---------------------------------------------------------------------------
-
-if dyn is not None and (dyn.quantization_sim or dyn.pruning_sim):
-    st.markdown("### What if you optimized this?")
-    st.caption(
-        "Simulations applied to a copy of your model -- nothing modifies the "
-        "uploaded file. Output drift is measured against the unmodified model "
-        "on the dummy input."
-    )
-
-    sim_left, sim_right = st.columns(2)
-
-    with sim_left:
-        st.markdown("**Dynamic INT8 quantization**")
-        q = dyn.quantization_sim
-        if q:
-            qa, qb = st.columns(2)
-            qa.metric("New size", f"{q['size_mb']:.1f} MB",
-                      delta=f"-{q['size_reduction_pct']:.1f}%")
-            qb.metric(
-                "Output drift",
-                f"{q['output_drift']:.3f}" if q['output_drift'] is not None else "n/a",
-                help="0 = identical to original. >0.1 may need calibration.",
-            )
-            st.caption(
-                f"Quantizes {', '.join(q['supported_layers'])}. "
-                "Conv layers need static / QAT pipelines for full INT8 savings."
-            )
-        else:
-            st.caption(
-                "Dynamic quantization didn't run -- this model has no "
-                "Linear/LSTM/GRU layers, or quantization tripped on a custom op."
-            )
-
-    with sim_right:
-        st.markdown("**Magnitude pruning**")
-        if dyn.pruning_sim:
-            df = pd.DataFrame(dyn.pruning_sim)
-            df["ratio"] = df["ratio"].map(lambda r: f"{int(r*100)}%")
-            df = df.rename(columns={
-                "ratio": "Prune ratio",
-                "theoretical_size_mb": "Size (sparse, MB)",
-                "output_drift": "Output drift",
-            })
-            df["Output drift"] = df["Output drift"].map(
-                lambda x: f"{x:.3f}" if x is not None else "n/a"
-            )
-            df["Size (sparse, MB)"] = df["Size (sparse, MB)"].map(lambda x: f"{x:.1f}")
-            st.dataframe(df, use_container_width=True, hide_index=True)
-            st.caption(
-                "Sizes assume sparse storage or a quant+prune export. Drift "
-                "values <0.1 usually recover with a short fine-tune."
-            )
-        else:
-            st.caption("Pruning simulation skipped (no Linear/Conv layers).")
 
 # ---------------------------------------------------------------------------
 # Inside your model -- visualizations
@@ -948,89 +753,10 @@ with mix_right:
                           legend=dict(orientation="v", x=1.02, y=0.5))
         st.plotly_chart(fig, use_container_width=True)
 
-st.markdown("### Action plan")
-if not PRO:
-    _locked_card(
-        title="Tailored, copy-paste code recipes for each opportunity above.",
-        body=(
-            "The course pairs every gap we just spotted with a working "
-            "PyTorch / ONNX / TensorRT recipe -- and an explanation of when "
-            "to reach for each."
-        ),
-        preview_bullets=[
-            "Quantization recipes: dynamic INT8, static INT8, QAT",
-            "Pruning recipes: magnitude, structured, movement -- with "
-            "fine-tune schedules",
-            "Distillation: building a student that keeps the accuracy",
-            "ONNX & TensorRT: opset choice, dynamic axes, plugin authoring",
-            "Hardware-aware tuning for CPU, GPU, mobile, edge",
-        ],
-    )
-else:
-    # Pro tier: actually show the recipes.
-    for rec in report.recommendations:
-        st.markdown(f"- {rec}")
-    st.code(
-        "# Quantize to FP16\n"
-        "model.half()\n"
-        "torch.save(model, 'model_fp16.pt')\n\n"
-        "# Magnitude pruning at 50%\n"
-        "import torch.nn.utils.prune as prune\n"
-        "for m in model.modules():\n"
-        "    if isinstance(m, (torch.nn.Linear, torch.nn.Conv2d)):\n"
-        "        prune.l1_unstructured(m, name='weight', amount=0.5)\n"
-        "        prune.remove(m, 'weight')\n\n"
-        "# ONNX export\n"
-        "torch.onnx.export(model, dummy, 'model.onnx', opset_version=17)\n",
-        language="python",
-    )
-
-# Power-user JSON dump, hidden by default.
-with st.expander("Raw analysis JSON"):
-    st.json(
-        {
-            "file_size_mb": report.file_size_mb,
-            "parameter_count": report.parameter_count,
-            "deployment_health_score": report.deployment_health_score,
-            "precision": {
-                "score": report.precision.score,
-                "verdict": report.precision.verdict,
-                "details": report.precision.details,
-            },
-            "pruning": {
-                "score": report.pruning.score,
-                "verdict": report.pruning.verdict,
-                "details": report.pruning.details,
-            },
-            "size": {
-                "score": report.size.score,
-                "verdict": report.size.verdict,
-                "details": report.size.details,
-            },
-            "exportability": {
-                "score": report.exportability.score,
-                "verdict": report.exportability.verdict,
-                "details": report.exportability.details,
-            },
-            "dynamic": {
-                "input_shape": list(report.dynamic.input_shape)
-                if (report.dynamic and report.dynamic.input_shape) else None,
-                "latency_ms_mean": report.dynamic.latency_ms_mean if report.dynamic else None,
-                "latency_ms_p95": report.dynamic.latency_ms_p95 if report.dynamic else None,
-                "peak_activation_mb": report.dynamic.peak_activation_mb if report.dynamic else None,
-                "flops": report.dynamic.flops if report.dynamic else None,
-                "onnx_export": report.dynamic.onnx_export if report.dynamic else None,
-                "quantization_sim": report.dynamic.quantization_sim if report.dynamic else None,
-                "pruning_sim": report.dynamic.pruning_sim if report.dynamic else [],
-                "architecture_guess": report.dynamic.architecture_guess if report.dynamic else None,
-            },
-        }
-    )
-
 st.divider()
 st.markdown(
-    "**Want to take this further?** The full Neural Network Optimization "
-    "course covers quantization, pruning, distillation, and ONNX / TensorRT "
-    "deployment end-to-end. The notebooks in this repo are a good starting "
-    "point."
+    "Want to close every gap above? The Neural Network Optimization course "
+    "covers quantization, pruning, distillation, and ONNX / TensorRT "
+    "deployment for embedded and AV stacks."
 )
+st.link_button("Enroll in the course", COURSE_URL, type="primary")

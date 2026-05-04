@@ -359,6 +359,17 @@ def detect_common_prefix(keys: list[str]) -> str:
     return candidates[0]
 
 
+def fingerprint(obj: Any) -> str | None:
+    """Detect architecture name from an nn.Module or state-dict.  Public --
+    this is also the function callers should use for static fingerprinting
+    without running any benchmarks."""
+    if isinstance(obj, nn.Module):
+        return _fingerprint(obj.state_dict())
+    if isinstance(obj, dict):
+        return _fingerprint(obj)
+    return None
+
+
 def _fingerprint(state_dict: dict) -> str | None:
     keys = set(state_dict.keys())
     prefix = detect_common_prefix(list(keys))

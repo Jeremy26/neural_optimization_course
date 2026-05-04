@@ -1,40 +1,34 @@
-"""Deployment narratives -- "if this shipped today, here's what would happen".
+"""Deployment narratives focused on robotics, autonomous vehicles, and edge.
 
-Each scenario takes the report and produces a short, vivid story tying the
-model's properties to a specific deployment context: robot, smartphone,
-serverless cloud, browser.  Some scenarios need FLOPs (computed during the
-live benchmarks); others run on file size alone, so we always show the
-storage-based ones and only show latency-based ones when benchmarks have
-been run.
+Each scenario is short and vivid: a target hardware platform, a budget, a
+"this is what would happen" line, and a Ships / Tight / Won't ship verdict.
+We don't tell the user how to fix it -- that's the course.
+
+All numbers come from static estimates (param count + architecture hint
+-> FLOPs, plus a 3x batch=1 penalty against published peak-TFLOPS specs),
+so scenarios always render -- no forward pass required.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from device_estimates import DEVICES, estimate_latency_ms
+from device_estimates import estimate_latency_ms
 
 
 @dataclass
 class Scenario:
-    setting: str          # "Edge robot", "Smartphone AR", ...
-    target: str           # "Jetson Orin Nano @ 30 FPS"
-    hook: str             # "If you bolted this onto a delivery robot tomorrow..."
-    today_line: str       # what happens with the model as-is
+    setting: str          # short label: "Self-driving car"
+    target: str           # hardware + budget: "DRIVE Orin · 30 FPS"
+    hook: str             # italic "If you ran this on..."
+    today_line: str       # consequence as-is
     optimized_line: str   # what optimization unlocks
     verdict: str          # "Ships." | "Tight." | "Won't ship."
     severity: str         # "good" | "warning" | "critical"
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-# Theoretical peak-FLOPS latency assumes large batch and saturated kernels.
-# For the lead-magnet's deployment scenarios (batch=1, real workloads) we
-# scale by a realistic penalty -- empirically 2-5x slower than peak.  Using
-# 3x is the median across published batch=1 inference benchmarks.
+# Realistic batch=1 latency runs ~3x slower than peak-TFLOPS theoretical;
+# we apply that penalty so the verdicts reflect what teams actually live with.
 _BATCH1_PENALTY = 3.0
 
 
@@ -46,7 +40,14 @@ def _device_latency(flops: int, device_name: str, dtype: str) -> float:
     return float("inf")
 
 
-def _verdict_from_budget(latency_ms: float, budget_ms: float) -> tuple[str, str]:
+def _fmt_ms(ms: float) -> str:
+    """Avoid the '0 ms' artifact when latency is <0.5 ms."""
+    if ms < 1.0:
+        return "<1"
+    return f"{ms:.0f}"
+
+
+def _verdict(latency_ms: float, budget_ms: float) -> tuple[str, str]:
     if latency_ms <= budget_ms:
         return "Ships.", "good"
     if latency_ms <= budget_ms * 1.6:
@@ -54,197 +55,145 @@ def _verdict_from_budget(latency_ms: float, budget_ms: float) -> tuple[str, str]
     return "Won't ship.", "critical"
 
 
+def _current_dtype(report) -> str:
+    dist = report.precision.details.get("dtype_distribution", {})
+    keys = " ".join(dist.keys())
+    if "float16" in keys or "bfloat16" in keys:
+        return "fp16"
+    if "int8" in keys or "qint8" in keys:
+        return "int8"
+    return "fp32"
+
+
 # ---------------------------------------------------------------------------
-# Storage-based scenarios (always available)
+# Scenarios
 # ---------------------------------------------------------------------------
 
 
-def _serverless_cold_start(file_size_mb: float) -> Scenario:
-    """AWS Lambda / Cloud Run roughly: ~30 ms per MB of model loaded from
-    disk, plus a 500 ms baseline for the runtime itself.  These numbers are
-    rough but match the order of magnitude reported by every team that's
-    actually measured it."""
-    cold_start_s = 0.5 + file_size_mb * 0.030
-    optimized_size = file_size_mb * 0.25  # FP32 -> INT8 ballpark
-    optimized_cold_s = 0.5 + optimized_size * 0.030
-    if cold_start_s <= 1.0:
-        verdict, sev = "Ships.", "good"
-    elif cold_start_s <= 3.0:
-        verdict, sev = "Tight.", "warning"
-    else:
-        verdict, sev = "Won't ship.", "critical"
+def _self_driving(flops: int, dtype: str) -> Scenario:
+    # The AGX-class SoC sits in DRIVE Orin and the high-end robotics platforms
+    # alike -- same silicon, different PCBs.
+    today = _device_latency(flops, "Jetson Orin AGX", dtype)
+    optimized = _device_latency(flops, "Jetson Orin AGX", "int8")
+    verdict, sev = _verdict(today, 33.3)
     return Scenario(
-        setting="Serverless cloud",
-        target="AWS Lambda / Cloud Run, cold start",
-        hook=(
-            "If a request came in cold and your function had to spin up "
-            "this model from scratch..."
-        ),
+        setting="Self-driving stack",
+        target="NVIDIA DRIVE Orin (AGX-class) · 30 FPS perception",
+        hook="If a self-driving car perceived the world through this model...",
         today_line=(
-            f"At {file_size_mb:.0f} MB on disk you'd be staring at a "
-            f"~{cold_start_s:.1f} s cold-start before the first inference. "
-            "AWS bills you for every second; users abandon after three."
+            f"At {dtype.upper()}, ~{_fmt_ms(today)} ms per frame. "
+            + (
+                "Inside the loop. The world doesn't move faster than your model."
+                if today <= 33.3
+                else "By the time you decide to brake, the car has already "
+                "moved a meter."
+            )
         ),
         optimized_line=(
-            f"After quantization to INT8 the artifact is ~{optimized_size:.0f} MB "
-            f"and cold-start drops to ~{optimized_cold_s:.1f} s -- nearly "
-            "indistinguishable from a warm container."
+            f"At INT8 with TensorRT, ~{_fmt_ms(optimized)} ms -- the "
+            "perception stack stops being your bottleneck."
         ),
         verdict=verdict,
         severity=sev,
     )
 
 
-def _mobile_app_bundle(file_size_mb: float) -> Scenario:
-    """Mobile context: app bundle size matters, and 4G download speed is
-    where users actually live.  At ~5 MB/s on a decent 4G link, downloading
-    a 50 MB checkpoint is a 10-second wait that users *feel*."""
-    download_s_4g = file_size_mb / 5.0  # 5 MB/s = decent 4G
-    optimized_size = file_size_mb * 0.25
-    optimized_dl = optimized_size / 5.0
-    if file_size_mb <= 20:
-        verdict, sev = "Ships.", "good"
-    elif file_size_mb <= 80:
-        verdict, sev = "Tight.", "warning"
-    else:
-        verdict, sev = "Won't ship.", "critical"
-    return Scenario(
-        setting="On-device mobile",
-        target="iPhone / Android app bundle",
-        hook="If this shipped inside your iOS / Android app today...",
-        today_line=(
-            f"You'd add {file_size_mb:.0f} MB to the app download "
-            f"({download_s_4g:.0f} s on 4G). On Apple's old cellular limit "
-            "you'd have blown past 200 MB once you add the rest of your app."
-        ),
-        optimized_line=(
-            f"Quantized + pruned to ~{optimized_size:.0f} MB "
-            f"({optimized_dl:.1f} s on 4G), the model becomes a non-event "
-            "in your bundle size budget."
-        ),
-        verdict=verdict,
-        severity=sev,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Latency-based scenarios (need FLOPs from benchmarks)
-# ---------------------------------------------------------------------------
-
-
-def _edge_robot(flops: int, current_dtype: str) -> Scenario:
-    """30 FPS = 33 ms budget per frame -- the threshold below which a robot
-    can keep up with a moving world."""
-    budget = 33.3
-    today = _device_latency(flops, "Jetson Orin Nano", current_dtype)
+def _delivery_robot(flops: int, dtype: str) -> Scenario:
+    today = _device_latency(flops, "Jetson Orin Nano", dtype)
     optimized = _device_latency(flops, "Jetson Orin Nano", "int8")
-    today_fps = 1000.0 / today if today > 0 else 0.0
-    opt_fps = 1000.0 / optimized if optimized > 0 else 0.0
-    verdict, sev = _verdict_from_budget(today, budget)
+    verdict, sev = _verdict(today, 100.0)
+    fps_now = 1000.0 / today if today > 0 else 0
     return Scenario(
-        setting="Edge robot",
-        target="Jetson Orin Nano · 30 FPS budget (33 ms/frame)",
-        hook=(
-            "If you bolted this onto a delivery robot or a drone "
-            "tomorrow..."
-        ),
+        setting="Delivery robot",
+        target="Jetson Orin Nano · 10 FPS closed-loop control",
+        hook="If a delivery robot was navigating with this model...",
         today_line=(
-            f"At {current_dtype.upper()}, theoretical throughput is "
-            f"~{today:.1f} ms/frame ({today_fps:.0f} FPS). "
+            f"At {dtype.upper()}, ~{_fmt_ms(today)} ms per inference "
+            f"({fps_now:.0f} FPS). "
             + (
-                "You're inside the budget."
-                if today <= budget
-                else "Real-world batch=1 latency runs 2-5x slower -- you'd be "
-                "perceiving the world a beat behind reality."
+                "Smooth closed-loop control."
+                if today <= 100
+                else "The robot reacts to where the world *was*, "
+                "not where it is."
             )
         ),
         optimized_line=(
-            f"At INT8 with TensorRT, ~{optimized:.1f} ms/frame "
-            f"({opt_fps:.0f} FPS) -- comfortable headroom for sensor fusion, "
-            "tracking, and a control loop."
+            f"At INT8, ~{_fmt_ms(optimized)} ms -- now you can layer in "
+            "tracking, language, and a mapper without missing a beat."
         ),
         verdict=verdict,
         severity=sev,
     )
 
 
-def _phone_ar(flops: int, current_dtype: str) -> Scenario:
-    """60 FPS AR = 16.7 ms budget. The phone NPU peaks at INT8."""
-    budget = 16.7
-    today = _device_latency(flops, "iPhone 15 Pro (NPU)", current_dtype)
-    optimized = _device_latency(flops, "iPhone 15 Pro (NPU)", "int8")
-    today_fps = 1000.0 / today if today > 0 else 0.0
-    opt_fps = 1000.0 / optimized if optimized > 0 else 0.0
-    verdict, sev = _verdict_from_budget(today, budget)
+def _drone(flops: int, dtype: str) -> Scenario:
+    today = _device_latency(flops, "Jetson Orin Nano", dtype)
+    optimized = _device_latency(flops, "Jetson Orin Nano", "int8")
+    verdict, sev = _verdict(today, 33.3)
     return Scenario(
-        setting="Smartphone AR",
-        target="iPhone 15 Pro NPU · 60 FPS AR (17 ms/frame)",
-        hook=(
-            "If a user pointed an AR camera at the world and asked your "
-            "model what they were looking at..."
-        ),
+        setting="Autonomous drone",
+        target="Jetson Orin Nano · 30 FPS obstacle avoidance",
+        hook="If a drone was dodging trees in real time with this model...",
         today_line=(
-            f"At {current_dtype.upper()}, ~{today:.1f} ms/frame "
-            f"({today_fps:.0f} FPS). "
+            f"At {dtype.upper()}, ~{_fmt_ms(today)} ms per frame. "
             + (
-                "ARKit will composite cleanly."
-                if today <= budget
-                else "ARKit drops frames; the overlay floats off the world."
+                "Inside the avoidance window."
+                if today <= 33.3
+                else "It hits the branch before it has time to dodge it."
             )
         ),
         optimized_line=(
-            f"On the Apple Neural Engine at INT8, ~{optimized:.1f} ms "
-            f"({opt_fps:.0f} FPS) -- the model leaves the GPU free for the "
-            "rest of the experience."
+            f"At INT8 with TensorRT, ~{_fmt_ms(optimized)} ms -- thermal "
+            "and battery headroom for everything else the flight stack needs."
         ),
         verdict=verdict,
         severity=sev,
     )
 
 
-def _cloud_throughput(flops: int, current_dtype: str) -> Scenario:
-    """Throughput economics: how many inferences/sec/GPU, and what that means
-    at 1 million requests per day."""
-    today = _device_latency(flops, "NVIDIA T4", current_dtype)
-    optimized = _device_latency(flops, "NVIDIA T4", "int8")
-    today_per_s = 1000.0 / today if today > 0 else 0.0
-    opt_per_s = 1000.0 / optimized if optimized > 0 else 0.0
-    # Daily budget at 1M requests = req/s needed = ~12
-    needed_rps = 1_000_000 / 86_400
-    today_gpus = max(1, round(needed_rps / max(today_per_s, 0.01)))
-    opt_gpus = max(1, round(needed_rps / max(opt_per_s, 0.01)))
-    if today_gpus <= 1:
-        verdict, sev = "Ships.", "good"
-    elif today_gpus <= 4:
-        verdict, sev = "Tight.", "warning"
-    else:
-        verdict, sev = "Won't ship.", "critical"
-    speedup = today_per_s / max(opt_per_s, 0.01)
-    if opt_gpus < today_gpus:
-        opt_summary = (
-            f"INT8 with TensorRT: {opt_per_s:,.0f} req/s/GPU, "
-            f"~{opt_gpus} T4(s) -- {today_gpus / max(opt_gpus,1):.1f}x "
-            "cheaper to operate."
-        )
-    else:
-        opt_summary = (
-            f"INT8 with TensorRT: {opt_per_s:,.0f} req/s/GPU "
-            f"({1/max(speedup,0.01):.1f}x throughput, same hardware) -- "
-            "headroom for 10x growth before you add a second GPU."
-        )
+def _smart_camera(flops: int) -> Scenario:
+    optimized = _device_latency(flops, "Coral Edge TPU", "int8")
+    verdict, sev = _verdict(optimized, 100.0)
+    fps = 1000.0 / optimized if optimized > 0 else 0
     return Scenario(
-        setting="Cloud throughput",
-        target="NVIDIA T4 · 1 M inferences / day",
-        hook=(
-            "If you put this behind an API and traffic hit 1 M requests "
-            "per day..."
-        ),
+        setting="Smart camera",
+        target="Coral Edge TPU · INT8 only",
+        hook="If a quality-control camera on a factory line ran this...",
         today_line=(
-            f"At {current_dtype.upper()}, ~{today_per_s:,.0f} req/s/GPU "
-            f"in batch=1. Sustaining 1M/day needs ~{today_gpus} T4(s) "
-            "running 24/7 -- before you account for spikes."
+            "The Edge TPU only runs INT8. An FP32 model can't even land "
+            "on the device -- you'd be stuck on the ARM host CPU at <1 FPS."
         ),
-        optimized_line=opt_summary,
+        optimized_line=(
+            f"Compiled to INT8 for Edge TPU: ~{_fmt_ms(optimized)} ms "
+            f"({fps:.0f} FPS). Now the camera keeps up with the line."
+        ),
+        verdict=verdict,
+        severity=sev,
+    )
+
+
+def _embedded_arm(flops: int, dtype: str) -> Scenario:
+    # ARM Cortex-A series at ~4x slower than a Xeon core is the rough heuristic.
+    today = _device_latency(flops, "CPU (Xeon, 1 core)", dtype) * 4
+    optimized = _device_latency(flops, "CPU (Xeon, 1 core)", "int8") * 4
+    verdict, sev = _verdict(today, 1000.0)
+    return Scenario(
+        setting="Embedded ARM",
+        target="Raspberry Pi / Cortex-A · CPU only",
+        hook="If you tried to ship this on a fanless ARM box...",
+        today_line=(
+            f"At {dtype.upper()}, ~{_fmt_ms(today)} ms per inference. "
+            + (
+                "Fits the low-rate sensing this kind of box is built for."
+                if today <= 1000
+                else "Way past real-time -- the box won't keep up with "
+                "its own sensors."
+            )
+        ),
+        optimized_line=(
+            f"At INT8, ~{_fmt_ms(optimized)} ms -- enough headroom that "
+            "the model isn't what defines your loop rate anymore."
+        ),
         verdict=verdict,
         severity=sev,
     )
@@ -256,25 +205,14 @@ def _cloud_throughput(flops: int, current_dtype: str) -> Scenario:
 
 
 def build_scenarios(report) -> list[Scenario]:
-    out: list[Scenario] = [
-        _serverless_cold_start(report.file_size_mb),
-        _mobile_app_bundle(report.file_size_mb),
+    flops = report.estimated_flops
+    if not flops:
+        return []
+    dtype = _current_dtype(report)
+    return [
+        _self_driving(flops, dtype),
+        _delivery_robot(flops, dtype),
+        _drone(flops, dtype),
+        _smart_camera(flops),
+        _embedded_arm(flops, dtype),
     ]
-    flops = (
-        report.dynamic.flops if report.dynamic and report.dynamic.flops else None
-    )
-    if flops:
-        # Pick a "current" dtype -- whatever the model actually ships at.
-        dist = report.precision.details.get("dtype_distribution", {})
-        if dist and "torch.float16" in str(dist):
-            current_dtype = "fp16"
-        elif dist and ("torch.int8" in str(dist) or "torch.qint8" in str(dist)):
-            current_dtype = "int8"
-        else:
-            current_dtype = "fp32"
-        out.extend([
-            _edge_robot(flops, current_dtype),
-            _phone_ar(flops, current_dtype),
-            _cloud_throughput(flops, current_dtype),
-        ])
-    return out
