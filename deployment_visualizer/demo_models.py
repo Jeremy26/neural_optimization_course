@@ -1,17 +1,26 @@
 """One-click sample model downloads.
 
-For users who don't have a checkpoint handy, we offer a few public models
-with directly-downloadable weights.  All of these are well-known
-deployment targets in the robotics / AV / computer-vision space:
+We deliberately favor real self-driving / robotics research checkpoints
+over generic ImageNet backbones -- the audience for this tool ships
+perception stacks, not classification benchmarks.
 
-* ResNet-18 -- the canonical vision backbone (PyTorch official URL)
-* MobileNet V2 -- a deploy-grade mobile vision model
-* DeepLabV3-MobileNet-V3 -- semantic segmentation (used in self-driving
-  perception stacks)
-* YOLOv5n -- real-time object detection backbone (Ultralytics release)
+* YOLOP -- multi-task driving perception (traffic + lanes + drivable
+  surface) from hustvl/YOLOP, the canonical AV multi-task baseline.
+* HybridNets -- another end-to-end driving perception model.
+* LRASPP MobileNet V3 -- real-time semantic segmentation, the kind of
+  model self-driving teams ship for drivable-surface masks.
+* Faster R-CNN MobileNet V3 320 -- mobile-grade object detection
+  covering the COCO classes (cars, persons, traffic signs) at deploy
+  speed.
 
-Downloads are cached to ``~/.cache/deployment_visualizer/`` so the second
-click is instant.
+Some of these third-party AV checkpoints serialise the full ``nn.Module``
+class instance instead of a clean ``state_dict``.  When that happens the
+deserializer falls back to pickle and we surface a clear warning -- the
+analyzer's static checks still produce a useful report on the tensors
+inside, but the architecture-specific sub-paths (instantiating into a
+torchvision model for ONNX export, etc.) won't fire.
+
+Downloads are cached to ``~/.cache/deployment_visualizer/``.
 """
 
 from __future__ import annotations
@@ -28,48 +37,64 @@ class DemoModel:
     key: str
     name: str
     one_liner: str
-    domain: str             # "Self-driving perception", "Mobile vision", ...
-    size_mb: float          # advertised download size
+    domain: str
+    size_mb: float
     url: str
-    filename: str           # local filename to cache as
+    filename: str
 
 
 DEMOS: list[DemoModel] = [
     DemoModel(
-        key="resnet18",
-        name="ResNet-18",
-        one_liner="The canonical 11M-parameter vision backbone -- the model every quantization paper benchmarks against.",
-        domain="Image classification (ImageNet-1K)",
-        size_mb=45.0,
-        url="https://download.pytorch.org/models/resnet18-f37072fd.pth",
-        filename="resnet18.pth",
+        key="yolop",
+        name="YOLOP",
+        one_liner=(
+            "Multi-task driving perception: traffic-object detection, "
+            "drivable-area segmentation, and lane-line segmentation in "
+            "one forward pass. Trained on BDD100K."
+        ),
+        domain="Self-driving · multi-task",
+        size_mb=7.9,
+        url="https://github.com/hustvl/YOLOP/raw/main/weights/End-to-end.pth",
+        filename="yolop_end_to_end.pth",
     ),
     DemoModel(
-        key="mobilenet_v2",
-        name="MobileNet V2",
-        one_liner="A 3.5M-parameter mobile-first backbone -- designed from the ground up for edge deployment.",
-        domain="Mobile-grade image classification",
-        size_mb=14.0,
-        url="https://download.pytorch.org/models/mobilenet_v2-b0353104.pth",
-        filename="mobilenet_v2.pth",
+        key="hybridnets",
+        name="HybridNets",
+        one_liner=(
+            "End-to-end perception network that does what YOLOP does -- "
+            "object detection plus drivable-area and lane segmentation -- "
+            "with a different backbone choice."
+        ),
+        domain="Self-driving · multi-task",
+        size_mb=30.0,
+        url="https://github.com/datvuthanh/HybridNets/releases/download/v1.1/hybridnets.pth",
+        filename="hybridnets.pth",
     ),
     DemoModel(
-        key="deeplab_mobilenet",
-        name="DeepLabV3 (MobileNet V3)",
-        one_liner="Semantic segmentation on a mobile backbone -- the kind of model self-driving teams ship for drivable-surface masks.",
-        domain="Self-driving perception",
-        size_mb=42.0,
-        url="https://download.pytorch.org/models/deeplabv3_mobilenet_v3_large-fc3c493d.pth",
-        filename="deeplab_mobilenet.pth",
+        key="lraspp",
+        name="LR-ASPP MobileNet V3",
+        one_liner=(
+            "Lightweight real-time semantic segmentation -- the architecture "
+            "self-driving teams reach for when they need road / lane / "
+            "obstacle masks at 30+ FPS on edge hardware."
+        ),
+        domain="Edge segmentation",
+        size_mb=12.0,
+        url="https://download.pytorch.org/models/lraspp_mobilenet_v3_large-d234d4ea.pth",
+        filename="lraspp_mobilenet_v3.pth",
     ),
     DemoModel(
-        key="yolov5n",
-        name="YOLOv5-Nano",
-        one_liner="A 1.9M-parameter real-time detector -- the classic AV / robotics object-detection demo.",
-        domain="Real-time object detection",
-        size_mb=4.0,
-        url="https://github.com/ultralytics/yolov5/releases/download/v7.0/yolov5n.pt",
-        filename="yolov5n.pt",
+        key="frcnn_mobile",
+        name="Faster R-CNN (MobileNet V3 320)",
+        one_liner=(
+            "Mobile-grade object detection on a 320-px input. Detects the "
+            "80 COCO categories -- cars, persons, traffic lights, stop signs, "
+            "bicycles -- the AV / robotics shortlist."
+        ),
+        domain="Mobile detection",
+        size_mb=74.0,
+        url="https://download.pytorch.org/models/fasterrcnn_mobilenet_v3_large_320_fpn-907ea3f9.pth",
+        filename="fasterrcnn_mobilenet_v3_320.pth",
     ),
 ]
 
@@ -93,12 +118,6 @@ def is_cached(model: DemoModel) -> bool:
 
 
 def download(model: DemoModel, on_progress=None) -> bytes:
-    """Fetch the model weights -- from cache when available, otherwise via
-    HTTP with optional progress reporting.
-
-    ``on_progress`` is a callable receiving ``(bytes_so_far, total_bytes)``.
-    Total may be 0 if the server doesn't announce content-length.
-    """
     path = cached_path(model)
     if is_cached(model):
         if on_progress:
@@ -130,10 +149,8 @@ def download(model: DemoModel, on_progress=None) -> bytes:
             "Check your network or upload a local file instead."
         ) from exc
 
-    # Persist to cache.
     try:
         path.write_bytes(data)
     except OSError:
-        # Cache write failed (read-only home, etc.) -- still usable in memory.
         pass
     return data

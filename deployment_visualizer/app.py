@@ -367,60 +367,31 @@ if ss.get("file_hash") != file_hash:
         except Exception as exc:  # noqa: BLE001
             st.error(f"Could not load this checkpoint: {exc}")
             st.stop()
-    # Original = the file as uploaded (never mutated).  Working = the model
-    # after any optimize-button presses.  We re-render against `working_*`.
+    # Original = the file as uploaded (never mutated -- Tabs 1-3 always
+    # render against this).  Optimized = whatever Tab 4 has produced so far,
+    # which stacks across multiple Apply clicks until the user resets.
     ss["file_hash"] = file_hash
     ss["report"] = report
     ss["original_report"] = report
     ss["load_mode"] = load_mode
     ss["obj"] = obj
     ss["original_obj"] = obj
-    ss["applied_actions"] = []          # list of action names applied
-    ss["last_snippet"] = None           # most recent code snippet to surface
+    ss["optimized_obj"] = None          # populated by Tab 4 actions
+    ss["optimized_report"] = None
+    ss["applied_actions"] = []          # chronological list of technique names
+    ss["last_snippet"] = None           # most recent code snippet for CODE Review
 
 report = ss["report"]
 load_mode = ss["load_mode"]
 original_report = ss["original_report"]
 
 
-def _apply_optimization(action: str) -> None:
-    """Run a one-click optimizer, re-analyze the result, persist to session
-    state, and trigger a re-render so the cards update in place."""
-    import io
-    import torch
-    from optimizers import make_efficient, make_lean, make_compact, try_export_onnx
-
-    obj = ss["obj"]
-    snippet = None
-    err = None
-    if action == "efficient":
-        new_obj, snippet = make_efficient(obj)
-    elif action == "lean":
-        new_obj, snippet = make_lean(obj)
-    elif action == "compact":
-        new_obj, snippet = make_compact(obj)
-    elif action == "export":
-        new_obj, snippet, err = try_export_onnx(obj)
-    else:
-        return
-
-    if action != "export":
-        # Re-serialize + re-analyze so all downstream visuals reflect the
-        # transformed model (file size shrinks, dtype mix changes, etc.).
-        bio = io.BytesIO()
-        torch.save(new_obj, bio)
-        new_report, _mode, new_obj_loaded = analyze(bio.getvalue())
-        ss["obj"] = new_obj_loaded
-        ss["report"] = new_report
-        ss["applied_actions"] = ss.get("applied_actions", []) + [action]
-    ss["last_snippet"] = (snippet, err)
-
-
 def _reset_optimizations() -> None:
-    ss["obj"] = ss["original_obj"]
-    ss["report"] = ss["original_report"]
+    ss["optimized_obj"] = None
+    ss["optimized_report"] = None
     ss["applied_actions"] = []
     ss["last_snippet"] = None
+    ss["onnx_result"] = None
 
 
 if load_mode == "pickle":
@@ -463,23 +434,9 @@ from device_estimates import network_stats  # noqa: E402
 
 stats = network_stats(ss["obj"])
 
-# A small banner above the tabs when the user has applied optimizations,
-# with a Reset button to undo back to the original upload.
-if ss.get("applied_actions"):
-    applied = ", ".join(ss["applied_actions"])
-    delta_score = report.deployment_health_score - original_report.deployment_health_score
-    sign = "+" if delta_score >= 0 else ""
-    bar_l, bar_r = st.columns([4, 1])
-    with bar_l:
-        st.success(
-            f"Applied: **{applied}**. "
-            f"Score moved from {original_report.deployment_health_score:.0f} "
-            f"to {report.deployment_health_score:.0f} ({sign}{delta_score:.0f})."
-        )
-    with bar_r:
-        st.button("Reset", on_click=_reset_optimizations, use_container_width=True)
-
-# Build the model passport once -- used in Tab 1 and elsewhere.
+# Build the model passport once -- used in Tab 1.  Optimization changes
+# inside Tab 4 do *not* mutate the passport or stats: those describe the
+# uploaded model, period.
 from passport import build_passport  # noqa: E402
 
 passport = build_passport(ss["obj"], report.architecture)
@@ -781,17 +738,66 @@ with tab_deployment:
             )
 
 # =====================================================================
-# Tab 4 -- Optimization: pick a technique, see the score move, learn how
+# Tab 4 -- OPTIMIZATION ZONE: visually distinct workshop where techniques
+# stack on top of each other.  Tabs 1-3 stay frozen on the original
+# upload; only this tab reflects the cumulative transformation.
 # =====================================================================
 with tab_optimization:
     from optimizers import TECHNIQUES, try_export_onnx  # noqa: E402
 
-    st.markdown("### Pick an optimization")
-    st.caption(
-        "Each technique is one move in the deployment-engineer toolkit. "
-        "Apply it here to see the model's score move; the exact code from "
-        "the matching course notebook appears below."
+    # The "workshop" view reads from optimized_* when present; falls back
+    # to the original upload otherwise.  Either way, Tabs 1-3 are
+    # untouched.
+    opt_obj = ss.get("optimized_obj") or ss["original_obj"]
+    opt_report = ss.get("optimized_report") or original_report
+    has_applied = bool(ss.get("applied_actions"))
+
+    # Workshop banner: amber accent, distinct from the cyan elsewhere,
+    # so this tab visually reads as a different room of the factory.
+    chain = " → ".join(ss["applied_actions"]) if has_applied else "Untouched"
+    st.markdown(
+        f"""
+        <div style="border:1px solid rgba(245,158,11,0.45);
+                     border-left:5px solid #f59e0b;
+                     background:linear-gradient(160deg,
+                                                 rgba(245,158,11,0.10),
+                                                 rgba(15,23,42,0.0));
+                     border-radius:12px;padding:18px 22px;
+                     margin-bottom:18px;">
+          <div style="display:flex;justify-content:space-between;
+                       align-items:center;flex-wrap:wrap;gap:14px;">
+            <div>
+              <div style="font-size:0.72rem;letter-spacing:.16em;
+                           font-weight:800;color:#f59e0b;">
+                OPTIMIZATION ZONE
+              </div>
+              <div style="font-size:1.4rem;font-weight:800;
+                           margin-top:4px;line-height:1.2;">
+                The workshop
+              </div>
+              <div style="font-size:0.92rem;color:#cbd5e1;
+                           margin-top:4px;">
+                Stack techniques on top of each other. The other tabs
+                stay frozen on the file you uploaded.
+              </div>
+            </div>
+            <div style="text-align:right;">
+              <div style="font-size:0.72rem;color:#94a3b8;
+                           letter-spacing:.1em;">CURRENT CHAIN</div>
+              <div style="font-family:ui-monospace,monospace;
+                           font-size:0.95rem;font-weight:700;
+                           color:#fcd34d;margin-top:4px;
+                           max-width:480px;overflow-wrap:anywhere;">
+                {chain}
+              </div>
+            </div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
+
+    st.markdown("#### Pick a technique to add to the chain")
 
     technique_keys = [t.key for t in TECHNIQUES]
     technique_labels = {t.key: t.label for t in TECHNIQUES}
@@ -810,30 +816,107 @@ with tab_optimization:
     st.info(technique_descriptions[chosen])
     st.caption(f"Course material: `{technique_notebooks[chosen]}` in this repo.")
 
-    apply_col, reset_col = st.columns([2, 1])
-    with apply_col:
+    btn_apply, btn_reset, btn_dl = st.columns([2, 1, 1])
+    with btn_apply:
         if st.button(
-            f"Apply: {technique_labels[chosen]}",
+            f"Apply on top: {technique_labels[chosen]}",
             type="primary", use_container_width=True, key="opt_apply",
         ):
             import io
             import torch as _torch
-            obj_in = ss["original_obj"]
-            new_obj, snippet = technique_apply[chosen](obj_in)
-            bio = io.BytesIO()
-            _torch.save(new_obj, bio)
-            new_report, _mode, new_obj_loaded = analyze(bio.getvalue())
-            ss["obj"] = new_obj_loaded
-            ss["report"] = new_report
-            ss["applied_actions"] = [technique_labels[chosen]]
-            ss["last_snippet"] = (snippet, None)
+            current_obj = ss.get("optimized_obj") or ss["original_obj"]
+            try:
+                new_obj, snippet = technique_apply[chosen](current_obj)
+                bio = io.BytesIO()
+                _torch.save(new_obj, bio)
+                new_report, _mode, new_obj_loaded = analyze(bio.getvalue())
+                ss["optimized_obj"] = new_obj_loaded
+                ss["optimized_report"] = new_report
+                ss["applied_actions"] = (
+                    ss.get("applied_actions", []) + [technique_labels[chosen]]
+                )
+                ss["last_snippet"] = (snippet, None)
+            except Exception as exc:  # noqa: BLE001 -- shown to the user
+                # Some chains are illegal (e.g. quantizing already-quantized
+                # weights).  Surface a clean error in CODE Review.
+                from optimizers import Snippet as _S
+                err_snip = _S(
+                    title=f"{technique_labels[chosen]} couldn't stack on this chain",
+                    summary="Some optimizations don't compose -- try Reset, then a different sequence.",
+                    notebook=technique_notebooks[chosen],
+                    code=f"# Error: {exc}",
+                )
+                ss["last_snippet"] = (err_snip, str(exc).splitlines()[0][:200])
             st.rerun()
-    with reset_col:
+
+    with btn_reset:
         if st.button(
-            "Reset to original", use_container_width=True, key="opt_reset"
+            "Reset", use_container_width=True, key="opt_reset",
+            help="Roll the chain back to the original upload.",
         ):
             _reset_optimizations()
             st.rerun()
+
+    with btn_dl:
+        # Always-on download: serialises whatever is currently the working
+        # state, so users can save the optimized model after any chain.
+        import io as _io
+        import torch as _torch
+        try:
+            _bio = _io.BytesIO()
+            _torch.save(opt_obj, _bio)
+            dl_bytes = _bio.getvalue()
+        except Exception:
+            dl_bytes = None
+        st.download_button(
+            "Download .pt",
+            data=dl_bytes or b"",
+            file_name=f"optimized_{source_label}".replace(" ", "_")
+                      .replace("/", "_") + (".pt" if not source_label.endswith(".pt") else ""),
+            disabled=dl_bytes is None,
+            use_container_width=True,
+            help="Save the current optimized chain to disk.",
+        )
+
+    # CODE Review -- right under the buttons.
+    last = ss.get("last_snippet")
+    if last:
+        snippet, err = last
+        accent = "#ef4444" if err else "#86efac"
+        result_html = (
+            f"<span style='color:{accent};font-weight:700;'>FAILED</span> &middot; {err}"
+            if err else
+            "<span style='color:#86efac;font-weight:700;'>OK</span> &middot; applied to the chain"
+        )
+        st.markdown(
+            f"""
+            <div style="border:1px solid rgba(245,158,11,0.30);
+                         background:rgba(15,23,42,0.35);
+                         border-radius:12px;padding:14px 18px;
+                         margin:14px 0 6px;">
+              <div style="display:flex;justify-content:space-between;
+                           align-items:baseline;margin-bottom:8px;">
+                <div style="font-size:0.72rem;letter-spacing:.16em;
+                             font-weight:800;color:#f59e0b;">
+                  CODE REVIEW
+                </div>
+                <div style="font-size:0.78rem;color:#94a3b8;">
+                  {result_html}
+                </div>
+              </div>
+              <div style="font-size:1.05rem;font-weight:700;
+                           margin-bottom:4px;">{snippet.title}</div>
+              <div style="font-size:0.9rem;color:#cbd5e1;
+                           margin-bottom:6px;">{snippet.summary}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.code(snippet.code, language="python")
+        st.caption(
+            f"Lifted from `{snippet.notebook}` in this repo. "
+            "The notebook walks through *why* it works, not just what."
+        )
 
     with st.expander("Why precision matters (the 30-second version)"):
         st.markdown(
@@ -874,14 +957,13 @@ with tab_optimization:
             unsafe_allow_html=True,
         )
 
-    st.markdown("### Score after optimization")
-    has_applied = bool(ss.get("applied_actions"))
+    st.markdown("#### Score after the chain")
     cols = st.columns(4)
     pairs = [
-        ("Efficiency", report.precision, original_report.precision),
-        ("Leanness", report.pruning, original_report.pruning),
-        ("Compactness", report.size, original_report.size),
-        ("Exportability", report.exportability, original_report.exportability),
+        ("Efficiency", opt_report.precision, original_report.precision),
+        ("Leanness", opt_report.pruning, original_report.pruning),
+        ("Compactness", opt_report.size, original_report.size),
+        ("Exportability", opt_report.exportability, original_report.exportability),
     ]
     for col, (label, cur, orig) in zip(cols, pairs):
         with col:
@@ -890,24 +972,25 @@ with tab_optimization:
 
     if has_applied:
         delta_score = (
-            report.deployment_health_score
+            opt_report.deployment_health_score
             - original_report.deployment_health_score
         )
         sign = "+" if delta_score >= 0 else ""
         st.success(
             f"Overall score: **{original_report.deployment_health_score:.0f} "
-            f"→ {report.deployment_health_score:.0f}** ({sign}{delta_score:.0f})"
+            f"→ {opt_report.deployment_health_score:.0f}** ({sign}{delta_score:.0f}). "
+            f"Carry weight: {original_report.file_size_mb:.0f} MB → "
+            f"{opt_report.file_size_mb:.0f} MB."
         )
 
-    st.markdown("### Try a real ONNX export")
+    st.markdown("#### Try a real ONNX export")
     st.caption(
-        "ONNX export is the first runtime step every deployment team takes. "
-        "Run it here and see whether your model survives the trip to a "
-        "deploy-grade runtime."
+        "Export the *current chain* to ONNX. This is the first runtime step "
+        "every deployment team takes -- if it fails here, it fails everywhere."
     )
-    if st.button("Export to ONNX", key="opt_onnx"):
+    if st.button("Export current chain to ONNX", key="opt_onnx"):
         with st.spinner("Tracing the graph..."):
-            _, snippet, err = try_export_onnx(ss["original_obj"])
+            _, snippet, err = try_export_onnx(opt_obj)
         ss["onnx_result"] = (snippet, err)
 
     onnx_result = ss.get("onnx_result")
@@ -921,17 +1004,6 @@ with tab_optimization:
             st.markdown(f"_{snippet.summary}_")
             st.code(snippet.code, language="python")
             st.caption(f"From `{snippet.notebook}` in the course repo.")
-
-    last = ss.get("last_snippet")
-    if last:
-        snippet, err = last
-        st.markdown("### What just happened")
-        st.markdown(f"**{snippet.title}** — _{snippet.summary}_")
-        st.code(snippet.code, language="python")
-        st.caption(
-            f"Lifted directly from `{snippet.notebook}` in this repo. The "
-            "notebook walks through *why* each step works, not just what."
-        )
 
 st.divider()
 st.markdown(
