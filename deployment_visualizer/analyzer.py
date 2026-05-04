@@ -82,6 +82,41 @@ class AnalysisReport:
 # ---------------------------------------------------------------------------
 
 
+_WRAPPER_KEYS = (
+    "state_dict", "model_state_dict", "model", "net", "module",
+    "weights", "params", "ema_state_dict",
+)
+
+
+def _unwrap(obj: Any) -> Any:
+    """Production checkpoints are usually wrapper dicts like
+    ``{"state_dict": ..., "optimizer": ..., "epoch": 12}``.  Walk down common
+    wrapper keys until we hit either an ``nn.Module`` or a dict whose values
+    are mostly tensors -- the thing the rest of the analyzer actually wants
+    to inspect."""
+    seen = set()
+    for _ in range(6):  # bounded depth
+        if isinstance(obj, nn.Module):
+            return obj
+        if not isinstance(obj, dict) or id(obj) in seen:
+            return obj
+        seen.add(id(obj))
+        # If this dict already looks like a state-dict (mostly tensors), stop.
+        tensor_count = sum(1 for v in obj.values() if isinstance(v, torch.Tensor))
+        if obj and tensor_count / len(obj) >= 0.5:
+            return obj
+        # Otherwise descend through the first matching wrapper key.
+        descended = False
+        for k in _WRAPPER_KEYS:
+            if k in obj and isinstance(obj[k], (dict, nn.Module)):
+                obj = obj[k]
+                descended = True
+                break
+        if not descended:
+            return obj
+    return obj
+
+
 def load_checkpoint(buffer: bytes) -> tuple[Any, str]:
     """Load a checkpoint from raw bytes.
 
@@ -93,11 +128,11 @@ def load_checkpoint(buffer: bytes) -> tuple[Any, str]:
     bio = io.BytesIO(buffer)
     try:
         obj = torch.load(bio, map_location="cpu", weights_only=True)
-        return obj, "weights_only"
+        return _unwrap(obj), "weights_only"
     except Exception:
         bio.seek(0)
         obj = torch.load(bio, map_location="cpu", weights_only=False)
-        return obj, "pickle"
+        return _unwrap(obj), "pickle"
 
 
 def _iter_tensors(obj: Any) -> list[tuple[str, torch.Tensor]]:

@@ -387,7 +387,9 @@ obj = ss.get("obj")
 
 # 1. Architecture treemap -- one glance: which modules eat your parameter budget?
 tree = viz.module_tree(obj)
-if tree:
+# Plotly renders nothing if the only node is the synthetic root with 0 params.
+has_real_nodes = any(r["params"] > 0 and r["id"] != "model" for r in tree)
+if tree and has_real_nodes:
     df = pd.DataFrame(tree)
     fig = go.Figure(go.Treemap(
         ids=df["id"],
@@ -412,8 +414,10 @@ if tree:
     st.plotly_chart(fig, use_container_width=True)
 else:
     st.info(
-        "Treemap unavailable -- this checkpoint doesn't expose module "
-        "structure (probably a tensor-only file)."
+        "Treemap unavailable -- couldn't find tensor data at the top level "
+        "of this checkpoint. If your file is a wrapper like "
+        "``{'state_dict': ..., 'optimizer': ...}`` we usually unwrap it "
+        "automatically; let us know if your structure is different."
     )
 
 # 2. Two-column visual breakdown
@@ -440,13 +444,8 @@ with viz_left:
             legend=dict(orientation="h", y=-0.2),
         )
         st.plotly_chart(fig, use_container_width=True)
-    elif report.raw.get("is_module"):
-        st.info("All leaf modules report 0 parameters (unusual).")
     else:
-        st.info(
-            "Per-layer breakdown needs the full ``nn.Module``. Save with "
-            "``torch.save(model, ...)`` for this view."
-        )
+        st.info("No layer-level parameter data found in this checkpoint.")
 
 with viz_right:
     st.markdown("#### Weight magnitude distributions")

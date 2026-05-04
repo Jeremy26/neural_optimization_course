@@ -113,23 +113,57 @@ def module_tree(obj: Any) -> list[dict]:
     return []
 
 
+def _infer_layer_type(layer_path: str, tensor_keys: list[str]) -> str:
+    """Cheap classifier: pattern-match on the parameter names attached to
+    this module path to guess what kind of layer it is."""
+    suffixes = {k.rsplit(".", 1)[-1] for k in tensor_keys}
+    if {"running_mean", "running_var"} & suffixes:
+        return "BatchNorm"
+    if "num_batches_tracked" in suffixes:
+        return "BatchNorm"
+    # Heuristic: 4D conv weights vs 2D linear weights would need shapes.
+    # Without them we keep it generic.
+    if "weight" in suffixes and "bias" in suffixes:
+        return "Linear/Conv"
+    if "weight" in suffixes:
+        return "Weight-only"
+    return "Module"
+
+
 def per_layer_costs(obj: Any) -> list[dict]:
     """Bar-chart-ready: each row is a leaf module with params + a coarse
-    'cost class' for coloring."""
-    if not isinstance(obj, nn.Module):
-        return []
-    rows = []
-    for name, m in obj.named_modules():
-        if name == "" or list(m.children()):  # skip the root + non-leaves
-            continue
-        params = _module_params(m)
-        if params == 0:
-            continue
-        rows.append({
-            "name": name,
-            "type": type(m).__name__,
-            "params": params,
-        })
+    'cost class' for coloring.  Works on both ``nn.Module`` and state-dicts
+    by grouping keys by their parent path."""
+    rows: list[dict] = []
+    if isinstance(obj, nn.Module):
+        for name, m in obj.named_modules():
+            if name == "" or list(m.children()):
+                continue
+            params = _module_params(m)
+            if params == 0:
+                continue
+            rows.append({
+                "name": name,
+                "type": type(m).__name__,
+                "params": params,
+            })
+    elif isinstance(obj, dict):
+        groups: dict[str, list[str]] = defaultdict(list)
+        sums: dict[str, int] = defaultdict(int)
+        for k, v in obj.items():
+            if not isinstance(v, torch.Tensor):
+                continue
+            parent = k.rsplit(".", 1)[0] if "." in k else "(root)"
+            groups[parent].append(k)
+            sums[parent] += v.numel()
+        for path, n in sums.items():
+            if n == 0:
+                continue
+            rows.append({
+                "name": path,
+                "type": _infer_layer_type(path, groups[path]),
+                "params": n,
+            })
     rows.sort(key=lambda r: r["params"], reverse=True)
     return rows
 
@@ -151,7 +185,7 @@ def weight_histograms(obj: Any) -> list[dict]:
                     entries.append((f"{name}.{pname}" if name else pname, p.detach(), type(m).__name__))
     elif isinstance(obj, dict):
         for k, v in obj.items():
-            if isinstance(v, torch.Tensor) and v.dim() >= 2 and k.endswith(".weight"):
+            if isinstance(v, torch.Tensor) and v.dim() >= 2 and v.is_floating_point():
                 entries.append((k, v.detach(), "weight"))
 
     entries.sort(key=lambda e: e[1].numel(), reverse=True)
