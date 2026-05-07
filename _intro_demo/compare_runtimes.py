@@ -1,0 +1,213 @@
+"""Render a side-by-side comparison video of SceneSeg running as:
+   LEFT  — PyTorch eager mode (the "before")
+   RIGHT — TensorRT FP16 engine (the "after")
+
+Both run on the Orin GPU, on the same Waymo frames, frame by frame.
+Each panel shows live latency + FPS in an overlay.
+
+Designed for a course intro demo. Output is one MP4 file.
+"""
+import argparse
+import time
+from pathlib import Path
+from collections import deque
+
+import cv2
+import numpy as np
+import torch
+import torchvision.transforms as T
+from PIL import Image
+
+import tensorrt as trt
+import pycuda.driver as cuda
+import pycuda.autoinit  # noqa: F401  (initializes CUDA context)
+
+# Class colors — matches the Workshop / Mini_ONNX
+COLORS = np.array([
+    [240,  40,  40],   # background
+    [180,  60, 200],   # foreground (cars / pedestrians)
+    [ 80, 200,  80],   # drivable road
+], dtype=np.uint8)
+
+
+def load_pytorch(pt_path: str, device: str):
+    model = torch.jit.load(pt_path, map_location=device)
+    model.eval()
+    return model
+
+
+def load_engine(engine_path: str):
+    logger = trt.Logger(trt.Logger.WARNING)
+    runtime = trt.Runtime(logger)
+    with open(engine_path, "rb") as f:
+        engine = runtime.deserialize_cuda_engine(f.read())
+    return engine
+
+
+class TRTRunner:
+    """Minimal TRT inference wrapper — single input, single output, batch=1."""
+
+    def __init__(self, engine):
+        self.engine = engine
+        self.ctx = engine.create_execution_context()
+        self.in_name = engine.get_tensor_name(0)
+        self.out_name = engine.get_tensor_name(1)
+        self.in_shape = tuple(engine.get_tensor_shape(self.in_name))
+        self.out_shape = tuple(engine.get_tensor_shape(self.out_name))
+        self.d_in = cuda.mem_alloc(int(np.prod(self.in_shape)) * 4)
+        self.d_out = cuda.mem_alloc(int(np.prod(self.out_shape)) * 4)
+        self.stream = cuda.Stream()
+
+    def __call__(self, x_np: np.ndarray) -> np.ndarray:
+        out = np.empty(self.out_shape, dtype=np.float32)
+        x = np.ascontiguousarray(x_np, dtype=np.float32)
+        cuda.memcpy_htod_async(self.d_in, x, self.stream)
+        self.ctx.set_tensor_address(self.in_name, int(self.d_in))
+        self.ctx.set_tensor_address(self.out_name, int(self.d_out))
+        self.ctx.execute_async_v3(stream_handle=self.stream.handle)
+        cuda.memcpy_dtoh_async(out, self.d_out, self.stream)
+        self.stream.synchronize()
+        return out
+
+
+def to_segmentation_image(logits: np.ndarray, target_size: tuple) -> np.ndarray:
+    """logits: (1, C, H, W) → BGR image at target_size (W, H)."""
+    seg = np.argmax(logits[0], axis=0).astype(np.uint8)
+    rgb = COLORS[seg]
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    return cv2.resize(bgr, target_size, interpolation=cv2.INTER_NEAREST)
+
+
+def overlay_stats(img: np.ndarray, label: str, latency_ms: float, fps: float):
+    """Draw a translucent stat bar on top of img (in-place)."""
+    h, w = img.shape[:2]
+    bar_h = 60
+    overlay = img.copy()
+    cv2.rectangle(overlay, (0, 0), (w, bar_h), (0, 0, 0), -1)
+    cv2.addWeighted(overlay, 0.55, img, 0.45, 0, img)
+
+    cv2.putText(img, label, (15, 25),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(img, f"{latency_ms:5.1f} ms   {fps:5.1f} FPS",
+                (15, 50),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                (90, 255, 90) if fps > 30 else (90, 180, 255),
+                2, cv2.LINE_AA)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--pt", required=True, help="SceneSeg traced .pt")
+    ap.add_argument("--engine", required=True, help="Built TRT FP16 .engine")
+    ap.add_argument("--frames", required=True, help="Folder of .jpg frames")
+    ap.add_argument("--out", required=True, help="Output MP4 path")
+    ap.add_argument("--fps", type=int, default=30)
+    ap.add_argument("--duration", type=int, default=30, help="Output seconds")
+    ap.add_argument("--height", type=int, default=320, help="Model input H")
+    ap.add_argument("--width", type=int, default=640, help="Model input W")
+    ap.add_argument("--display", action="store_true", help="Preview live (no MP4)")
+    args = ap.parse_args()
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Device: {device}")
+
+    pt_model = load_pytorch(args.pt, device)
+    trt_runner = TRTRunner(load_engine(args.engine))
+    print("Models loaded")
+
+    frame_paths = sorted(Path(args.frames).glob("*.jpg"))
+    if not frame_paths:
+        raise SystemExit(f"No .jpg frames in {args.frames}")
+    print(f"{len(frame_paths)} frames available")
+
+    H, W = args.height, args.width
+    preprocess = T.Compose([
+        T.Resize((H, W)),
+        T.ToTensor(),
+        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+
+    panel_w, panel_h = W, H
+    out_w = panel_w * 2 + 4   # 4px gutter
+    out_h = panel_h
+
+    writer = None
+    if not args.display:
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(args.out, fourcc, args.fps, (out_w, out_h))
+
+    pt_window = deque(maxlen=15)
+    trt_window = deque(maxlen=15)
+
+    n_frames = args.fps * args.duration
+    # Warmup — first runs are always slowest
+    print("Warming up...")
+    warmup_img = cv2.imread(str(frame_paths[0]))
+    warmup_rgb = cv2.cvtColor(warmup_img, cv2.COLOR_BGR2RGB)
+    x = preprocess(Image.fromarray(warmup_rgb)).unsqueeze(0)
+    for _ in range(5):
+        with torch.no_grad():
+            _ = pt_model(x.to(device)).cpu().numpy()
+        _ = trt_runner(x.numpy())
+
+    print(f"Rendering {n_frames} frames -> {args.out}")
+    for i in range(n_frames):
+        frame_path = frame_paths[i % len(frame_paths)]
+        bgr = cv2.imread(str(frame_path))
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        x = preprocess(Image.fromarray(rgb)).unsqueeze(0)
+
+        # PyTorch eager
+        t0 = time.perf_counter()
+        with torch.no_grad():
+            pt_logits = pt_model(x.to(device)).cpu().numpy()
+        torch.cuda.synchronize() if device == "cuda" else None
+        pt_ms = (time.perf_counter() - t0) * 1000
+        pt_window.append(pt_ms)
+
+        # TRT FP16
+        t0 = time.perf_counter()
+        trt_logits = trt_runner(x.numpy())
+        trt_ms = (time.perf_counter() - t0) * 1000
+        trt_window.append(trt_ms)
+
+        pt_seg = to_segmentation_image(pt_logits, (panel_w, panel_h))
+        trt_seg = to_segmentation_image(trt_logits, (panel_w, panel_h))
+
+        # Blend each panel with the original frame for visual context
+        bg = cv2.resize(bgr, (panel_w, panel_h))
+        pt_panel = cv2.addWeighted(bg, 0.4, pt_seg, 0.6, 0)
+        trt_panel = cv2.addWeighted(bg, 0.4, trt_seg, 0.6, 0)
+
+        overlay_stats(pt_panel, "PyTorch (before)",
+                      np.mean(pt_window), 1000 / np.mean(pt_window))
+        overlay_stats(trt_panel, "TensorRT FP16 (after)",
+                      np.mean(trt_window), 1000 / np.mean(trt_window))
+
+        gutter = np.zeros((panel_h, 4, 3), dtype=np.uint8)
+        composite = np.hstack([pt_panel, gutter, trt_panel])
+
+        if args.display:
+            cv2.imshow("Orin demo", composite)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+        else:
+            writer.write(composite)
+
+        if (i + 1) % args.fps == 0:
+            print(f"  {i+1:4}/{n_frames}  "
+                  f"PT {np.mean(pt_window):.1f} ms  "
+                  f"TRT {np.mean(trt_window):.1f} ms  "
+                  f"speedup {np.mean(pt_window)/np.mean(trt_window):.1f}x")
+
+    if writer is not None:
+        writer.release()
+        print(f"\nDone. Final speedup: "
+              f"{np.mean(pt_window)/np.mean(trt_window):.1f}x")
+        print(f"Output: {args.out}")
+    if args.display:
+        cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()
