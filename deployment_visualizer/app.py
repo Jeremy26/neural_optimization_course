@@ -1063,10 +1063,21 @@ with tab_optimization:
                         if c == 1:
                             x = x.mean(dim=1, keepdim=True)
 
+                        def _first_float_dtype(m):
+                            for p in m.parameters():
+                                if p.is_floating_point():
+                                    return p.dtype
+                            return _torch.float32
+
                         def _topk(module, k=3):
                             module.eval()
+                            # Match input dtype to the module -- after FP16
+                            # cast the module is Half and feeding a Float
+                            # input throws ``expected scalar type Float but
+                            # found Half`` (and vice-versa).
+                            x_typed = x.to(_first_float_dtype(module))
                             with _torch.no_grad():
-                                out = module(x)
+                                out = module(x_typed)
                             if isinstance(out, dict):
                                 out = next(iter(out.values()))
                             if isinstance(out, (list, tuple)):

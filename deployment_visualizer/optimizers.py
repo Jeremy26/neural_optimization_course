@@ -318,6 +318,16 @@ def _guess_dummy_input(module: nn.Module) -> torch.Tensor | None:
     return None
 
 
+def _module_param_dtype(module: nn.Module) -> torch.dtype:
+    """Return the dtype of the first floating-point parameter, so we can
+    feed a matching dummy input.  Defaults to float32 for modules with no
+    floating params (rare, but safe)."""
+    for p in module.parameters():
+        if p.is_floating_point():
+            return p.dtype
+    return torch.float32
+
+
 def try_export_onnx(obj: Any) -> tuple[Any, Snippet, str | None, bytes | None]:
     """Attempt a real ONNX export.  Auto-loads state-dicts into the matching
     torchvision model when the architecture is recognised.
@@ -333,6 +343,12 @@ def try_export_onnx(obj: Any) -> tuple[Any, Snippet, str | None, bytes | None]:
     dummy = _guess_dummy_input(module)
     if dummy is None:
         return obj, _SNIPPET_ONNX, "Couldn't infer a plausible input shape.", None
+
+    # Match dummy dtype to the model.  After ``make_efficient`` the module
+    # is FP16; feeding an FP32 dummy raises
+    # ``RuntimeError: expected scalar type Float but found Half``.
+    if dummy.is_floating_point():
+        dummy = dummy.to(_module_param_dtype(module))
 
     common = dict(
         opset_version=17,
