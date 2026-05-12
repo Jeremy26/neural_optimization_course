@@ -452,11 +452,48 @@ with st.sidebar:
 ss = st.session_state
 
 uploaded = st.file_uploader(
-    "Drop your `.pt` / `.pth` here", type=["pt", "pth"], accept_multiple_files=False
+    "Drop your `.pt` / `.pth` here",
+    type=["pt", "pth"], accept_multiple_files=False,
+    help=(
+        "Both file formats are accepted, but they unlock different "
+        "techniques in the workshop. See guidance below."
+    ),
+)
+
+# Upfront guidance on what each format unlocks.  Most engineers save
+# state-dicts because that's what tutorials show -- but state-dicts
+# can't run INT8 quantization or ONNX export without the module class.
+st.markdown(
+    """
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;
+                 margin:6px 0 12px;">
+      <div style="border:1px solid #d4d4d4;background:#fafafa;
+                   padding:12px 16px;">
+        <div style="font-size:0.72rem;letter-spacing:.14em;color:#595959;
+                     font-weight:700;">.PT &nbsp;·&nbsp; FULL MODULE</div>
+        <div style="font-size:0.92rem;color:#202F46;margin-top:4px;">
+          Saved with <code>torch.save(model, 'model.pt')</code>.
+          Carries the architecture class.
+          <b>Unlocks everything</b> -- INT8 quantization, ONNX export,
+          image inference.
+        </div>
+      </div>
+      <div style="border:1px solid #d4d4d4;background:#fafafa;
+                   padding:12px 16px;">
+        <div style="font-size:0.72rem;letter-spacing:.14em;color:#595959;
+                     font-weight:700;">.PTH &nbsp;·&nbsp; STATE-DICT ONLY</div>
+        <div style="font-size:0.92rem;color:#202F46;margin-top:4px;">
+          Saved with <code>torch.save(model.state_dict(), ...)</code>.
+          Weights only, no architecture. FP16 cast and magnitude
+          pruning work; <b>INT8 / ONNX / image inference don't</b>.
+        </div>
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
 
 if uploaded is None:
-    st.info("Waiting for a checkpoint -- drop a `.pt` or `.pth` file above.")
     st.stop()
 
 buffer = uploaded.getvalue()
@@ -624,21 +661,41 @@ with tab_optimization:
 
     st.markdown("#### Pick a technique to add to the chain")
 
+    # Detect whether the *current* chain object is an nn.Module instance.
+    # PT-only techniques (dynamic quant, structured pruning, image inference)
+    # need this; they fail loudly otherwise.
+    from torch import nn as _nn
+    has_module = isinstance(ss.get("optimized_obj") or ss["original_obj"], _nn.Module)
+    if not has_module:
+        st.warning(
+            "Your upload is a **state-dict** (no architecture class). "
+            "INT8 quantization, structured pruning, ONNX export and image "
+            "inference need the full `nn.Module` -- save with "
+            "`torch.save(model, 'model.pt')` to unlock them."
+        )
+
     technique_keys = [t.key for t in TECHNIQUES]
     technique_labels = {t.key: t.label for t in TECHNIQUES}
     technique_descriptions = {t.key: t.description for t in TECHNIQUES}
     technique_notebooks = {t.key: t.notebook for t in TECHNIQUES}
     technique_apply = {t.key: t.apply for t in TECHNIQUES}
     technique_videos = {t.key: t.video_url for t in TECHNIQUES}
+    technique_needs_module = {t.key: t.requires_module for t in TECHNIQUES}
+
+    def _label_for(k: str) -> str:
+        suffix = "  ·  needs .pt" if technique_needs_module[k] and not has_module else ""
+        return technique_labels[k] + suffix
 
     chosen = st.radio(
         "Technique",
         technique_keys,
-        format_func=lambda k: technique_labels[k],
+        format_func=_label_for,
         index=0,
         key="opt_technique",
         label_visibility="collapsed",
     )
+
+    blocked = technique_needs_module[chosen] and not has_module
 
     # Two-column layout: description on the left, video walkthrough on the
     # right.  When ``video_url`` isn't set yet, the right column shows a
@@ -678,10 +735,15 @@ with tab_optimization:
             )
 
     btn_apply, btn_reset, btn_dl = st.columns([2, 1, 1])
+    apply_label = (
+        f"Blocked: {technique_labels[chosen]} needs full .pt"
+        if blocked else f"Apply on top: {technique_labels[chosen]}"
+    )
     with btn_apply:
         if st.button(
-            f"Apply on top: {technique_labels[chosen]}",
+            apply_label,
             type="primary", use_container_width=True, key="opt_apply",
+            disabled=blocked,
         ):
             import io
             import torch as _torch
@@ -840,6 +902,144 @@ with tab_optimization:
             f"Carry weight: {original_report.file_size_mb:.0f} MB → "
             f"{opt_report.file_size_mb:.0f} MB."
         )
+
+    # ---- Image inference (PT-only) -----------------------------------
+    # Drop an image, run the original AND the optimized chain on it,
+    # show the top predictions side by side.  Concrete proof that the
+    # chain didn't quietly break the model.
+    st.markdown("#### Try it on an image")
+    if not has_module:
+        st.info(
+            "Image inference needs the full `nn.Module`. Re-upload "
+            "as `.pt` (saved with `torch.save(model, ...)`) to unlock."
+        )
+    else:
+        img_file = st.file_uploader(
+            "Drop an image",
+            type=["jpg", "jpeg", "png", "bmp"],
+            key="img_input",
+            label_visibility="collapsed",
+        )
+        if img_file is not None:
+            try:
+                from PIL import Image
+                import torchvision.transforms as T
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"Pillow / torchvision missing: {exc}")
+            else:
+                img = Image.open(img_file).convert("RGB")
+                img_col, pred_col = st.columns([2, 3])
+                with img_col:
+                    st.image(img, use_container_width=True)
+                with pred_col:
+                    # Sniff a plausible input size from the first conv layer.
+                    import torch as _torch
+                    def _input_size(module):
+                        for m in module.modules():
+                            if isinstance(m, _torch.nn.Conv2d):
+                                return (m.in_channels, 224, 224)
+                            if isinstance(m, _torch.nn.Linear):
+                                return (m.in_features,)
+                        return None
+
+                    original_module = ss["original_obj"]
+                    optimized_module = ss.get("optimized_obj") or original_module
+                    in_shape = _input_size(original_module)
+                    if in_shape is None or len(in_shape) != 3:
+                        st.warning(
+                            "Couldn't infer an image input shape from the "
+                            "model. Visual inference works best on vision "
+                            "backbones."
+                        )
+                    else:
+                        c, h, w = in_shape
+                        tform = T.Compose([
+                            T.Resize((h, w)),
+                            T.ToTensor(),
+                            T.Normalize(
+                                mean=[0.485, 0.456, 0.406],
+                                std=[0.229, 0.224, 0.225],
+                            ),
+                        ])
+                        x = tform(img).unsqueeze(0)
+                        if c == 1:
+                            x = x.mean(dim=1, keepdim=True)
+
+                        def _topk(module, k=3):
+                            module.eval()
+                            with _torch.no_grad():
+                                out = module(x)
+                            if isinstance(out, dict):
+                                out = next(iter(out.values()))
+                            if isinstance(out, (list, tuple)):
+                                out = out[0]
+                            logits = out.flatten()
+                            probs = _torch.softmax(logits.float(), dim=0)
+                            topv, topi = probs.topk(min(k, probs.numel()))
+                            return list(zip(topi.tolist(), topv.tolist()))
+
+                        try:
+                            orig_pred = _topk(original_module)
+                            opt_pred = (
+                                _topk(optimized_module)
+                                if optimized_module is not original_module
+                                else orig_pred
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            st.error(f"Inference failed: {exc}")
+                        else:
+                            def _format(rows):
+                                return "<br>".join(
+                                    f"<span style='font-family:ui-monospace,monospace;"
+                                    f"color:#93c5fd;'>class {idx:>4d}</span>"
+                                    f" &middot; "
+                                    f"<span style='color:#ffffff;font-weight:700;'>"
+                                    f"{p:.2%}</span>"
+                                    for idx, p in rows
+                                )
+                            st.markdown(
+                                f"""
+                                <div style="display:grid;
+                                             grid-template-columns:1fr 1fr;
+                                             gap:14px;margin-top:6px;">
+                                  <div style="border:1px solid #262626;
+                                               background:#0f0f0f;
+                                               padding:14px 16px;">
+                                    <div style="font-size:0.72rem;
+                                                 letter-spacing:.14em;
+                                                 color:#a3a3a3;
+                                                 font-weight:700;">
+                                      ORIGINAL · TOP 3
+                                    </div>
+                                    <div style="margin-top:8px;font-size:0.95rem;
+                                                 line-height:1.6;">
+                                      {_format(orig_pred)}
+                                    </div>
+                                  </div>
+                                  <div style="border:1px solid #0e80e5;
+                                               background:#0f0f0f;
+                                               padding:14px 16px;">
+                                    <div style="font-size:0.72rem;
+                                                 letter-spacing:.14em;
+                                                 color:#0e80e5;
+                                                 font-weight:700;">
+                                      OPTIMIZED · TOP 3
+                                    </div>
+                                    <div style="margin-top:8px;font-size:0.95rem;
+                                                 line-height:1.6;">
+                                      {_format(opt_pred)}
+                                    </div>
+                                  </div>
+                                </div>
+                                """,
+                                unsafe_allow_html=True,
+                            )
+                            st.caption(
+                                "Same image through both models. Class IDs "
+                                "are model-internal -- the takeaway is "
+                                "whether the optimized chain still picks "
+                                "the same top class with similar confidence."
+                            )
 
     # ONNX result (if the user has tried Export to ONNX from the button row).
     onnx_result = ss.get("onnx_result")

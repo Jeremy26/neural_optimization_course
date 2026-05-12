@@ -128,49 +128,52 @@ _SNIPPET_HALF = Snippet(
 
 
 def make_dynamic_quantized(obj: Any) -> tuple[Any, Snippet]:
-    """Dynamic INT8 quantization on Linear layers -- the canonical
-    course recipe from Mini_Quantization.ipynb.  Falls back gracefully
-    if the obj is a state-dict we can't materialise."""
+    """Dynamic INT8 quantization on Linear (+ LSTM / GRU) layers -- the
+    canonical Mini_Quantization recipe.
+
+    Quantizes WEIGHTS at conversion time (no calibration data needed) and
+    activations dynamically at inference time.  This is the post-training
+    quantization path that doesn't require a calibration loop -- distinct
+    from static PTQ which does.
+
+    Raises a clean ``RuntimeError`` when the upload is a state-dict whose
+    architecture we can't materialise into an nn.Module -- INT8
+    quantization fundamentally needs the module's forward graph.
+    """
     module, err = _ensure_module(obj)
     if module is None:
-        # Fall back to FP16 as the next-best move on a bare state-dict.
-        new_obj, _ = make_efficient(obj)
-        return new_obj, _SNIPPET_DYNAMIC_QUANT_FALLBACK
-    try:
-        qmodel = torch.quantization.quantize_dynamic(
-            copy.deepcopy(module).eval(),
-            {torch.nn.Linear},
-            dtype=torch.qint8,
+        raise RuntimeError(
+            "Dynamic INT8 quantization needs the full ``nn.Module``. "
+            "Your file is a state-dict only -- save with "
+            "``torch.save(model, 'model.pt')`` (not just "
+            "``model.state_dict()``) to unlock this step."
         )
-        return qmodel, _SNIPPET_DYNAMIC_QUANT
-    except Exception:
-        new_obj, _ = make_efficient(obj)
-        return new_obj, _SNIPPET_DYNAMIC_QUANT_FALLBACK
+    qmodel = torch.quantization.quantize_dynamic(
+        copy.deepcopy(module).eval(),
+        {torch.nn.Linear, torch.nn.LSTM, torch.nn.GRU},
+        dtype=torch.qint8,
+    )
+    return qmodel, _SNIPPET_DYNAMIC_QUANT
 
 
 _SNIPPET_DYNAMIC_QUANT = Snippet(
-    title="Dynamic INT8 quantization (Linear layers)",
-    summary="The canonical Mini_Quantization recipe -- shrinks Linear layers to INT8 at runtime.",
+    title="Dynamic INT8 quantization (no calibration)",
+    summary=(
+        "Quantizes weights at conversion time and activations dynamically "
+        "at inference time. No calibration loop required -- that's static "
+        "PTQ, which is a different recipe (Static_Quantization.ipynb)."
+    ),
     notebook="Mini_Quantization.ipynb",
     code=(
         "import torch.quantization\n"
         "\n"
+        "# Dynamic = weights quantized at conversion, activations at runtime.\n"
+        "# No calibration data needed.  Static PTQ is a separate recipe.\n"
         "quantized_model = torch.quantization.quantize_dynamic(\n"
         "    model,\n"
-        "    {torch.nn.Linear},\n"
+        "    {torch.nn.Linear, torch.nn.LSTM, torch.nn.GRU},\n"
         "    dtype=torch.qint8,\n"
         ")\n"
-    ),
-)
-
-_SNIPPET_DYNAMIC_QUANT_FALLBACK = Snippet(
-    title="Half-precision (fallback)",
-    summary="Dynamic INT8 needs the full module -- on a state-dict we apply half-precision instead.",
-    notebook="Mini_Quantization.ipynb",
-    code=(
-        "# Static-only fallback: half-precision keeps the same\n"
-        "# memory savings without needing a forward pass.\n"
-        "model = model.half()\n"
     ),
 )
 
@@ -384,72 +387,75 @@ class TechniqueOption:
     description: str
     notebook: str
     apply: callable     # callable(obj) -> (new_obj, Snippet) or (obj, Snippet, err)
-    # Optional URL to a walkthrough video.  When set, the workshop renders
-    # an embedded player above the Apply button; otherwise it shows a
-    # "video coming soon" placeholder slot that's visually styled to match
-    # the dark workshop panel.
+    # When True, this technique needs the full ``nn.Module`` -- it can't
+    # operate on a bare state-dict.  The UI uses this to gray out the
+    # option with a clear "needs full nn.Module" badge when only a
+    # state-dict was uploaded.
+    requires_module: bool = False
     video_url: str | None = None
 
 
 TECHNIQUES: list[TechniqueOption] = [
     TechniqueOption(
         key="half",
-        label="Half precision",
+        label="Half precision (FP16)",
         description=(
-            "Cast every weight from 32-bit to 16-bit floats. "
-            "Half the memory, half the bandwidth, the same accuracy "
-            "for almost every inference workload."
+            "Cast every weight from 32-bit to 16-bit floats. Half the "
+            "memory, half the bandwidth, the same accuracy for almost any "
+            "inference workload. Works on both `.pt` and `.pth` uploads."
         ),
         notebook="Mini_Quantization.ipynb",
         apply=make_efficient,
-        video_url=None,
+        requires_module=False,
     ),
     TechniqueOption(
         key="dynamic_quant",
         label="Dynamic INT8 quantization",
         description=(
-            "Convert Linear layers from 32-bit floats to 8-bit integers "
-            "at runtime. The fastest production-grade move on CPU "
-            "transformer / classifier inference."
+            "Weights drop to INT8 at conversion, activations quantize "
+            "dynamically at inference. **No calibration data needed** -- "
+            "that's static PTQ, which is a separate recipe. Needs a full "
+            "`.pt` file (the module class), not just weights."
         ),
         notebook="Mini_Quantization.ipynb",
         apply=make_dynamic_quantized,
-        video_url=None,
+        requires_module=True,
     ),
     TechniqueOption(
         key="prune_unstructured",
         label="L1 unstructured pruning (30%)",
         description=(
-            "Set the lowest-magnitude 30% of weights to zero in every "
-            "layer. Doesn't speed up inference on its own -- but "
-            "compresses well and stacks with quantization."
+            "Zero out the lowest-magnitude 30% of weights, layer by layer. "
+            "Compresses well and stacks with quantization. Doesn't speed "
+            "up inference on its own (you need sparse storage for that)."
         ),
         notebook="Mini_Pruning.ipynb",
         apply=make_lean,
-        video_url=None,
+        requires_module=False,
     ),
     TechniqueOption(
         key="prune_structured",
         label="L1 structured pruning (30%)",
         description=(
-            "Remove entire output channels or neurons by their L1 norm. "
-            "Aggressive -- needs fine-tuning -- but the speedup actually "
-            "shows up on hardware."
+            "Remove entire output channels by their L1 norm. Aggressive -- "
+            "needs a fine-tune to recover -- but the speedup actually "
+            "shows up on hardware. Needs the full `.pt` to know channel "
+            "boundaries."
         ),
         notebook="Mini_Pruning.ipynb",
         apply=make_structured_pruned,
-        video_url=None,
+        requires_module=True,
     ),
     TechniqueOption(
         key="stack",
         label="Half precision + 30% pruning (stacked)",
         description=(
-            "The two cheapest moves combined: half precision plus "
-            "magnitude pruning. Roughly a quarter of the original "
-            "carry weight after a short fine-tune."
+            "The two cheapest moves combined: FP16 plus magnitude pruning. "
+            "Roughly a quarter of the original carry weight after a short "
+            "fine-tune. Works on both `.pt` and `.pth`."
         ),
         notebook="Mini_Pruning.ipynb",
         apply=make_compact,
-        video_url=None,
+        requires_module=False,
     ),
 ]
