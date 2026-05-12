@@ -495,11 +495,63 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-if uploaded is None:
-    st.stop()
+# ---------------------------------------------------------------------------
+# "Or try a sample" -- in-process torchvision builders.  These work end to
+# end (FP16, INT8, ONNX export, image inference) because their classes are
+# importable, unlike research-grade .pt releases.
+# ---------------------------------------------------------------------------
 
-buffer = uploaded.getvalue()
-source_label = uploaded.name
+st.markdown("**Or try a sample model** — every workshop feature works on these:")
+sample_cols = st.columns(4)
+
+_samples = [
+    ("resnet18",            "ResNet-18",             "11.7M params · ImageNet classifier · the vision benchmark backbone",        lambda: __import__("torchvision").models.resnet18(weights="DEFAULT")),
+    ("mobilenet_v3_small",  "MobileNet V3 Small",    "2.5M params · mobile-optimized ImageNet classifier",                        lambda: __import__("torchvision").models.mobilenet_v3_small(weights="DEFAULT")),
+    ("efficientnet_b0",     "EfficientNet B0",       "5.3M params · modern vision backbone",                                      lambda: __import__("torchvision").models.efficientnet_b0(weights="DEFAULT")),
+    ("deeplabv3_mobilenet", "DeepLabV3 (MobileNet)", "Semantic segmentation · drivable surfaces, lane masks",                     lambda: __import__("torchvision").models.segmentation.deeplabv3_mobilenet_v3_large(weights="DEFAULT")),
+]
+for col, (key, name, blurb, builder) in zip(sample_cols, _samples):
+    with col:
+        st.markdown(
+            f"""
+            <div style="border:1px solid #d4d4d4;padding:10px 12px;
+                         min-height:96px;font-size:0.84rem;color:#202F46;
+                         line-height:1.45;">
+              <div style="font-weight:800;margin-bottom:4px;">{name}</div>
+              <div style="color:#595959;">{blurb}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.button(f"Load {name}", key=f"sample_{key}", use_container_width=True):
+            import io as _io
+            import torch as _torch
+            with st.spinner(f"Building {name}..."):
+                try:
+                    model = builder()
+                    bio = _io.BytesIO()
+                    _torch.save(model, bio)
+                    ss["sample_buffer"] = bio.getvalue()
+                    ss["sample_name"] = f"{name} (sample)"
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"Couldn't load {name}: {exc}")
+                    st.stop()
+            st.rerun()
+
+# Resolve which buffer is the working one: an actual upload takes
+# precedence over a previously-loaded sample, so refreshing the uploader
+# clears the sample state implicitly.
+if uploaded is not None:
+    buffer = uploaded.getvalue()
+    source_label = uploaded.name
+    # Clear stale sample state so we don't show its label.
+    ss.pop("sample_buffer", None)
+    ss.pop("sample_name", None)
+elif "sample_buffer" in ss:
+    buffer = ss["sample_buffer"]
+    source_label = ss.get("sample_name", "sample model")
+else:
+    st.stop()
 
 st.caption(f"Analyzing: **{source_label}**")
 
