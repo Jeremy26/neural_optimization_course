@@ -15,33 +15,9 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from analyzer import analyze
-from compatibility import compute_compatibility
-from problems import detect_problems
-from scenarios import build_scenarios
 
 
 COURSE_URL = "https://www.thinkautonomous.ai/"
-
-
-def _compat_card(family) -> None:
-    color = _score_color(family.score)
-    st.markdown(
-        f"""
-        <div class="metric-card" style="height:100%;">
-          <div class="metric-label">{family.name}</div>
-          <div style="display:flex;align-items:baseline;gap:6px;
-                       margin:6px 0 8px;">
-            <div style="font-size:2rem;font-weight:800;color:{color};
-                         line-height:1;">{family.score:.0f}</div>
-            <div style="font-size:0.8rem;color:#64748b;">/ 100</div>
-          </div>
-          <div class="metric-sub" style="font-size:0.88rem;">
-            {family.verdict}
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
 
 
 st.set_page_config(
@@ -173,10 +149,10 @@ st.markdown(
 
       /* =================================================================
          WORKSHOP ZONE -- target the 4th tab panel only.
-         Streamlit renders all tab panels in the DOM; nth-of-type(4) is the
+         Streamlit renders all tab panels in the DOM; nth-of-type(2) is the
          Optimization tab.  Everything inside flips to dark.
          ================================================================= */
-      .stTabs [role="tabpanel"]:nth-of-type(4) {
+      .stTabs [role="tabpanel"]:nth-of-type(2) {
         background:
           radial-gradient(800px 400px at 0% 0%, rgba(245,158,11,0.10), transparent 60%),
           radial-gradient(800px 400px at 100% 0%, rgba(34,211,238,0.08), transparent 60%),
@@ -192,44 +168,44 @@ st.markdown(
         padding: 28px 28px 32px;
         margin-top: -1px;
       }
-      .stTabs [role="tabpanel"]:nth-of-type(4) h1,
-      .stTabs [role="tabpanel"]:nth-of-type(4) h2,
-      .stTabs [role="tabpanel"]:nth-of-type(4) h3,
-      .stTabs [role="tabpanel"]:nth-of-type(4) h4 {
+      .stTabs [role="tabpanel"]:nth-of-type(2) h1,
+      .stTabs [role="tabpanel"]:nth-of-type(2) h2,
+      .stTabs [role="tabpanel"]:nth-of-type(2) h3,
+      .stTabs [role="tabpanel"]:nth-of-type(2) h4 {
         color: #f8fafc !important;
       }
-      .stTabs [role="tabpanel"]:nth-of-type(4) h3::before {
+      .stTabs [role="tabpanel"]:nth-of-type(2) h3::before {
         background: #f59e0b;
       }
-      .stTabs [role="tabpanel"]:nth-of-type(4) .stMarkdown p,
-      .stTabs [role="tabpanel"]:nth-of-type(4) .stMarkdown li,
-      .stTabs [role="tabpanel"]:nth-of-type(4) [data-testid="stCaptionContainer"] {
+      .stTabs [role="tabpanel"]:nth-of-type(2) .stMarkdown p,
+      .stTabs [role="tabpanel"]:nth-of-type(2) .stMarkdown li,
+      .stTabs [role="tabpanel"]:nth-of-type(2) [data-testid="stCaptionContainer"] {
         color: #cbd5e1;
       }
-      .stTabs [role="tabpanel"]:nth-of-type(4) .metric-card {
+      .stTabs [role="tabpanel"]:nth-of-type(2) .metric-card {
         background: #111827;
         border-color: rgba(148,163,184,0.18);
         box-shadow: none;
       }
-      .stTabs [role="tabpanel"]:nth-of-type(4) .metric-label { color: #94a3b8; }
-      .stTabs [role="tabpanel"]:nth-of-type(4) .metric-value { color: #f8fafc; }
-      .stTabs [role="tabpanel"]:nth-of-type(4) .metric-sub   { color: #cbd5e1; }
-      .stTabs [role="tabpanel"]:nth-of-type(4) [data-testid="stMarkdownContainer"] code {
+      .stTabs [role="tabpanel"]:nth-of-type(2) .metric-label { color: #94a3b8; }
+      .stTabs [role="tabpanel"]:nth-of-type(2) .metric-value { color: #f8fafc; }
+      .stTabs [role="tabpanel"]:nth-of-type(2) .metric-sub   { color: #cbd5e1; }
+      .stTabs [role="tabpanel"]:nth-of-type(2) [data-testid="stMarkdownContainer"] code {
         background: rgba(34,211,238,0.10);
         border: 1px solid rgba(34,211,238,0.30);
         color: #67e8f9;
       }
-      .stTabs [role="tabpanel"]:nth-of-type(4) .stAlert {
+      .stTabs [role="tabpanel"]:nth-of-type(2) .stAlert {
         background: rgba(34,211,238,0.06);
         border: 1px solid rgba(34,211,238,0.30);
         color: #cbd5e1;
       }
-      .stTabs [role="tabpanel"]:nth-of-type(4) [data-testid="stExpander"] {
+      .stTabs [role="tabpanel"]:nth-of-type(2) [data-testid="stExpander"] {
         background: #111827;
         border: 1px solid rgba(148,163,184,0.18);
       }
-      .stTabs [role="tabpanel"]:nth-of-type(4) [data-testid="stExpander"] summary,
-      .stTabs [role="tabpanel"]:nth-of-type(4) [data-testid="stExpander"] p {
+      .stTabs [role="tabpanel"]:nth-of-type(2) [data-testid="stExpander"] summary,
+      .stTabs [role="tabpanel"]:nth-of-type(2) [data-testid="stExpander"] p {
         color: #e2e8f0 !important;
       }
     </style>
@@ -326,35 +302,6 @@ def _score_card(
           <div style="display:flex;justify-content:space-between;
                        font-size:0.7rem;color:#64748b;margin-top:6px;">
             <span>amateur</span><span>pro range</span>
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def _problem_callout(p) -> None:
-    # accent / bg / border tuned for a light page so the tinted cards stay
-    # readable without competing with the surrounding content.
-    color_map = {
-        "critical": ("#b91c1c", "#fef2f2", "#fca5a5"),
-        "warning":  ("#b45309", "#fffbeb", "#fcd34d"),
-        "info":     ("#0369a1", "#f0f9ff", "#7dd3fc"),
-    }
-    accent, bg, border = color_map.get(p.severity, color_map["info"])
-    severity_label = {"critical": "CRITICAL",
-                      "warning": "WEAKNESS",
-                      "info": "WATCH-OUT"}.get(p.severity, "ISSUE")
-    st.markdown(
-        f"""
-        <div style="border:1px solid {border};background:{bg};
-                     border-radius:12px;padding:16px 20px;margin-bottom:10px;">
-          <div style="font-size:0.7rem;letter-spacing:.14em;font-weight:800;
-                       color:{accent};margin-bottom:6px;">{severity_label}</div>
-          <div style="font-size:1.1rem;font-weight:700;line-height:1.3;
-                       margin-bottom:6px;color:#0f172a;">{p.headline}</div>
-          <div style="font-size:0.92rem;color:#334155;line-height:1.5;">
-            {p.detail}
           </div>
         </div>
         """,
@@ -525,238 +472,39 @@ if load_mode == "pickle":
     )
 
 # ---------------------------------------------------------------------------
-# Hero
+# Two-tab structure: 1. Audit  ·  2. Optimization
 # ---------------------------------------------------------------------------
 
-hero_left, hero_right = st.columns([1, 2])
-
-with hero_left:
-    st.plotly_chart(_gauge(report.deployment_health_score), use_container_width=True)
-
-with hero_right:
-    st.markdown("##### Deployment Health Score")
-    st.markdown(f"### {report.overall_verdict}")
-    arch = report.architecture
-    badges = [
-        f"<span class='arch-badge'>{report.parameter_count / 1e6:.2f}M params</span>",
-        f"<span class='arch-badge'>{report.file_size_mb:.1f} MB on disk</span>",
-    ]
-    if arch:
-        badges.insert(0, f"<span class='arch-badge'>Looks like: {arch}</span>")
-    if report.estimated_flops:
-        badges.append(
-            f"<span class='arch-badge'>~{_format_flops(report.estimated_flops)}</span>"
-        )
-    st.markdown(" ".join(badges), unsafe_allow_html=True)
-
-# ---------------------------------------------------------------------------
-# Three-tab structure: 1. The network -> 2. Opportunities -> 3. Deployment
-# ---------------------------------------------------------------------------
-
-from device_estimates import network_stats  # noqa: E402
-
-stats = network_stats(ss["obj"])
-
-# Build the model passport once -- used in Tab 1.  Optimization changes
-# inside Tab 4 do *not* mutate the passport or stats: those describe the
-# uploaded model, period.
-from passport import build_passport  # noqa: E402
-
-passport = build_passport(ss["obj"], report.architecture)
-
-tab_about, tab_opportunities, tab_deployment, tab_optimization = st.tabs([
-    "1. About",
-    "2. Opportunities",
-    "3. Deployment",
-    "4. Optimization",
+tab_audit, tab_optimization = st.tabs([
+    "1. Audit",
+    "2. Optimization",
 ])
 
 # =====================================================================
-# Tab 1 -- About: who this model is, what it expects, what it does
+# Tab 1 -- Audit: the headline score + the four category cards
 # =====================================================================
-with tab_about:
-    st.markdown("### Model passport")
-    st.caption(
-        "A spec sheet for the artifact you uploaded. Everything here is "
-        "inferred from the file itself -- no forward pass needed."
-    )
-
-    p1, p2 = st.columns(2)
-    with p1:
-        arch_label = passport.architecture or "Unknown architecture"
-        st.markdown(
-            f"""
-            <div class="metric-card" style="padding:22px 24px;">
-              <div class="metric-label">Architecture</div>
-              <div style="font-size:1.6rem;font-weight:800;color:#0369a1;
-                           margin:4px 0 14px;line-height:1.1;">
-                {arch_label}
-              </div>
-              <div style="display:grid;grid-template-columns:120px 1fr;
-                           gap:6px 14px;font-size:0.92rem;color:#1e293b;">
-                <div style="color:#64748b;">Likely task</div>
-                <div><b>{passport.likely_task}</b></div>
-                <div style="color:#64748b;">Trained on</div>
-                <div>{passport.likely_dataset or "Unknown / custom dataset"}</div>
-                <div style="color:#64748b;">Parameters</div>
-                <div>{stats.parameter_count / 1e6:.2f}M</div>
-                <div style="color:#64748b;">Layers</div>
-                <div>{stats.leaf_modules}</div>
-                <div style="color:#64748b;">On disk</div>
-                <div>{report.file_size_mb:.1f} MB</div>
-                <div style="color:#64748b;">Compute</div>
-                <div>~{_format_flops(report.estimated_flops or 0)} per forward</div>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+with tab_audit:
+    hero_left, hero_right = st.columns([1, 2])
+    with hero_left:
+        st.plotly_chart(
+            _gauge(report.deployment_health_score), use_container_width=True
         )
-
-    with p2:
-        out_dim_str = (
-            ", ".join(str(x) for x in passport.output_shape)
-            if passport.output_shape else "?"
-        )
-        in_dim_str = (
-            ", ".join(str(x) for x in passport.input_shape)
-            if passport.input_shape else "?"
-        )
-        sample_html = ""
-        if passport.sample_classes:
-            sample_html = (
-                "<div style='font-size:0.85rem;color:#64748b;"
-                "margin-top:10px;'>Likely outputs include: "
-                + ", ".join(f"<i>{c}</i>" for c in passport.sample_classes)
-                + ", ...</div>"
+    with hero_right:
+        st.markdown("##### Deployment Health Score")
+        st.markdown(f"### {report.overall_verdict}")
+        # Architecture badge dropped on purpose -- fingerprint is too unreliable
+        # to display as a confident "this is what your model is".
+        badges = [
+            f"<span class='arch-badge'>{report.parameter_count / 1e6:.2f}M params</span>",
+            f"<span class='arch-badge'>{report.file_size_mb:.1f} MB on disk</span>",
+        ]
+        if report.estimated_flops:
+            badges.append(
+                f"<span class='arch-badge'>~{_format_flops(report.estimated_flops)}</span>"
             )
-        st.markdown(
-            f"""
-            <div class="metric-card" style="padding:22px 24px;">
-              <div class="metric-label">Data flow</div>
-              <div style="display:flex;align-items:center;gap:14px;
-                           margin:18px 0;">
-                <div style="flex:1;text-align:center;">
-                  <div style="font-size:0.72rem;color:#64748b;
-                               letter-spacing:.1em;">INPUT</div>
-                  <div style="font-size:1.05rem;font-weight:700;
-                               color:#047857;margin:4px 0;">
-                    {passport.input_description}
-                  </div>
-                  <div style="font-size:0.78rem;color:#475569;
-                               font-family:ui-monospace,monospace;">
-                    [{in_dim_str}]
-                  </div>
-                </div>
-                <div style="font-size:1.4rem;color:#0369a1;">→</div>
-                <div style="flex:0 0 auto;font-size:0.72rem;
-                             color:#0369a1;letter-spacing:.1em;
-                             font-weight:800;
-                             padding:6px 12px;border-radius:8px;
-                             background:#e0f2fe;
-                             border:1px solid #7dd3fc;">
-                  {arch_label}
-                </div>
-                <div style="font-size:1.4rem;color:#0369a1;">→</div>
-                <div style="flex:1;text-align:center;">
-                  <div style="font-size:0.72rem;color:#64748b;
-                               letter-spacing:.1em;">OUTPUT</div>
-                  <div style="font-size:1.05rem;font-weight:700;
-                               color:#b91c1c;margin:4px 0;">
-                    {passport.output_description}
-                  </div>
-                  <div style="font-size:0.78rem;color:#475569;
-                               font-family:ui-monospace,monospace;">
-                    [{out_dim_str}]
-                  </div>
-                </div>
-              </div>
-              {sample_html}
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        st.markdown(" ".join(badges), unsafe_allow_html=True)
 
-    st.markdown("### Network at a glance")
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Parameters", f"{stats.parameter_count / 1e6:.2f}M")
-    m2.metric("Layers", f"{stats.leaf_modules}")
-    m3.metric("Carries today", f"{stats.fp32_mb:.0f} MB")
-    slim_mb = stats.int8_mb
-    m4.metric(
-        "Could carry",
-        f"{slim_mb:.0f} MB",
-        delta=f"-{stats.fp32_mb - slim_mb:.0f} MB",
-        delta_color="inverse",
-        help="A deploy-grade version of this model would weigh roughly a quarter of what it does today.",
-    )
-
-    glance_left, glance_right = st.columns([3, 2])
-    with glance_left:
-        slim_pct = max(8, int(slim_mb / max(stats.fp32_mb, 1) * 100))
-        st.markdown(
-            f"""
-            <div class="metric-card" style="height:210px;
-                                              display:flex;flex-direction:column;
-                                              justify-content:center;">
-              <div class="metric-label">Carry weight</div>
-              <div style="margin-top:14px;">
-                <div style="display:flex;justify-content:space-between;
-                             font-size:0.82rem;color:#64748b;margin-bottom:4px;">
-                  <span>Today</span><span><b style='color:#b91c1c;'>{stats.fp32_mb:.0f} MB</b></span>
-                </div>
-                <div style="height:18px;border-radius:6px;
-                             background:#fee2e2;
-                             border:1px solid #fca5a5;
-                             margin-bottom:18px;"></div>
-                <div style="display:flex;justify-content:space-between;
-                             font-size:0.82rem;color:#64748b;margin-bottom:4px;">
-                  <span>Deploy-grade</span><span><b style='color:#15803d;'>{slim_mb:.0f} MB</b></span>
-                </div>
-                <div style="height:18px;border-radius:6px;
-                             background:#f1f5f9;position:relative;">
-                  <div style="position:absolute;left:0;top:0;bottom:0;
-                               width:{slim_pct}%;border-radius:6px;
-                               background:#bbf7d0;
-                               border:1px solid #86efac;"></div>
-                </div>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    with glance_right:
-        if stats.biggest_layer:
-            bn, bc = stats.biggest_layer
-            share = bc / max(stats.parameter_count, 1)
-            st.markdown(
-                f"""
-                <div class="metric-card" style="height:210px;display:flex;
-                                                  flex-direction:column;
-                                                  justify-content:center;">
-                  <div class="metric-label">Heaviest single piece</div>
-                  <div style="font-size:2rem;font-weight:800;color:#0369a1;
-                               line-height:1;margin:8px 0 6px;">
-                    {share:.0%}
-                  </div>
-                  <div class="metric-sub">
-                    of the entire model lives in one component
-                    ({bc / 1e6:.1f}M parameters).
-                  </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-# =====================================================================
-# Tab 2 -- Opportunities: category breakdown + weaknesses + problems
-# =====================================================================
-with tab_opportunities:
     st.markdown("### Category breakdown")
-    st.caption(
-        "Four dimensions of deployment-readiness. None of these are "
-        "techniques you should run -- they're attributes the model has."
-    )
     cols = st.columns(4)
     with cols[0]:
         _score_card("Efficiency", report.precision.score, report.precision.verdict)
@@ -769,99 +517,7 @@ with tab_opportunities:
             "Exportability", report.exportability.score, report.exportability.verdict
         )
 
-    st.markdown("### Weaknesses & opportunities")
-    st.caption("What's wrong with this model, in plain language.")
-    for rec in report.recommendations:
-        st.markdown(f"- {rec}")
 
-    st.markdown("### Problems detected")
-    problems = detect_problems(report)
-    for p in problems:
-        _problem_callout(p)
-
-# =====================================================================
-# Tab 3 -- Deployment: compatibility matrix + scenario cards
-# =====================================================================
-with tab_deployment:
-    st.markdown("### Deployment compatibility")
-    st.caption(
-        "Each runtime is its own world. Here's how your model lands on each, "
-        "given its current state -- not its theoretical ceiling."
-    )
-    families = compute_compatibility(report)
-    fam_cols = st.columns(3)
-    for i, fam in enumerate(families):
-        with fam_cols[i % 3]:
-            _compat_card(fam)
-
-    st.markdown("### If this shipped today...")
-    st.caption(
-        "What your model would actually do in the field. Verdicts use a 50% "
-        "safety margin against the budget."
-    )
-    scenarios = build_scenarios(report)
-    # (accent_text, deep_text, bg, border) per severity -- chosen so the card
-    # stays readable on a white page even with a translucent tint.
-    verdict_color = {
-        "good":     ("#15803d", "#14532d", "#f0fdf4", "#86efac"),
-        "warning":  ("#b45309", "#78350f", "#fffbeb", "#fcd34d"),
-        "critical": ("#b91c1c", "#7f1d1d", "#fef2f2", "#fca5a5"),
-    }
-    scen_cols = st.columns(2)
-    for i, scen in enumerate(scenarios):
-        accent, deep, bg, border = verdict_color.get(
-            scen.severity, verdict_color["warning"]
-        )
-        with scen_cols[i % 2]:
-            st.markdown(
-                f"""
-                <div style="border:1px solid {border};background:{bg};
-                             border-radius:14px;padding:18px 22px;
-                             margin-bottom:12px;">
-                  <div style="display:flex;justify-content:space-between;
-                               align-items:flex-start;margin-bottom:8px;gap:14px;">
-                    <div style="display:flex;align-items:center;gap:12px;
-                                 flex:1;min-width:0;">
-                      <div style="color:{accent};flex-shrink:0;">
-                        <svg width="32" height="32" viewBox="0 0 24 24"
-                             xmlns="http://www.w3.org/2000/svg">
-                          {scen.icon}
-                        </svg>
-                      </div>
-                      <div style="min-width:0;">
-                        <div style="font-size:0.72rem;letter-spacing:.14em;
-                                     color:{accent};font-weight:800;">
-                          {scen.setting.upper()}
-                        </div>
-                        <div style="font-size:0.85rem;color:#475569;
-                                     margin-top:2px;">
-                          {scen.target}
-                        </div>
-                      </div>
-                    </div>
-                    <div style="font-size:0.72rem;letter-spacing:.12em;
-                                 font-weight:800;color:white;
-                                 background:{accent};
-                                 padding:4px 11px;border-radius:999px;
-                                 flex-shrink:0;">
-                      {scen.verdict.upper()}
-                    </div>
-                  </div>
-                  <div style="font-size:0.98rem;font-style:italic;color:{deep};
-                               margin-bottom:12px;line-height:1.45;">
-                    "{scen.hook}"
-                  </div>
-                  <div style="font-size:0.92rem;color:#1e293b;line-height:1.55;
-                               margin-bottom:8px;">
-                    <b style="color:#b91c1c;">Today:</b> {scen.today_line}
-                  </div>
-                  <div style="font-size:0.92rem;color:#1e293b;line-height:1.55;">
-                    <b style="color:#15803d;">Optimized:</b> {scen.optimized_line}
-                  </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
 
 # =====================================================================
 # Tab 4 -- OPTIMIZATION ZONE: visually distinct workshop where techniques
