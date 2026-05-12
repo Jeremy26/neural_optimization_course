@@ -455,39 +455,41 @@ uploaded = st.file_uploader(
     "Drop your `.pt` / `.pth` here",
     type=["pt", "pth"], accept_multiple_files=False,
     help=(
-        "Both file formats are accepted, but they unlock different "
-        "techniques in the workshop. See guidance below."
+        "What unlocks the heavier features isn't the file extension -- "
+        "it's whether the file contains a reconstructable nn.Module. "
+        "See the explainer below."
     ),
 )
 
-# Upfront guidance on what each format unlocks.  Most engineers save
-# state-dicts because that's what tutorials show -- but state-dicts
-# can't run INT8 quantization or ONNX export without the module class.
+# Upfront and honest about the only thing that actually matters: whether
+# the checkpoint carries enough information for us to reconstruct a live
+# nn.Module.  File extension is misleading -- most research checkpoints
+# (BEVFusion, YOLOP, mmdetection / mmdet3d, etc.) ship as .pt but are
+# really state-dict wrappers that need the repo's Python classes to run.
 st.markdown(
     """
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;
-                 margin:6px 0 12px;">
-      <div style="border:1px solid #d4d4d4;background:#fafafa;
-                   padding:12px 16px;">
-        <div style="font-size:0.72rem;letter-spacing:.14em;color:#595959;
-                     font-weight:700;">.PT &nbsp;·&nbsp; FULL MODULE</div>
-        <div style="font-size:0.92rem;color:#202F46;margin-top:4px;">
-          Saved with <code>torch.save(model, 'model.pt')</code>.
-          Carries the architecture class.
-          <b>Unlocks everything</b> -- INT8 quantization, ONNX export,
-          image inference.
-        </div>
+    <div style="border:1px solid #d4d4d4;background:#fafafa;
+                 padding:14px 18px;margin:6px 0 12px;
+                 font-size:0.92rem;color:#202F46;line-height:1.55;">
+      <div style="font-size:0.72rem;letter-spacing:.14em;color:#595959;
+                   font-weight:700;margin-bottom:6px;">
+        WHAT UNLOCKS THE WORKSHOP
       </div>
-      <div style="border:1px solid #d4d4d4;background:#fafafa;
-                   padding:12px 16px;">
-        <div style="font-size:0.72rem;letter-spacing:.14em;color:#595959;
-                     font-weight:700;">.PTH &nbsp;·&nbsp; STATE-DICT ONLY</div>
-        <div style="font-size:0.92rem;color:#202F46;margin-top:4px;">
-          Saved with <code>torch.save(model.state_dict(), ...)</code>.
-          Weights only, no architecture. FP16 cast and magnitude
-          pruning work; <b>INT8 / ONNX / image inference don't</b>.
-        </div>
+      <div>
+        Two formats, but only one truly unlocks everything:
       </div>
+      <ul style="margin:6px 0 0 18px;padding:0;">
+        <li><b>Pickled module</b> &mdash; created with
+          <code>torch.save(model, 'model.pt')</code> when the model's
+          Python class is importable. Unlocks everything: INT8
+          quantization, ONNX export, image inference.</li>
+        <li><b>State-dict</b> (any extension, often called
+          <code>.pth</code>) &mdash; weights only. Most research
+          releases (<i>BEVFusion, YOLOP, mmdet, mmdet3d, ...</i>) ship
+          like this because the architecture lives in the repo's Python
+          code. <b>Only FP16 cast and magnitude pruning work</b> &mdash;
+          the rest needs the class definition.</li>
+      </ul>
     </div>
     """,
     unsafe_allow_html=True,
@@ -551,6 +553,50 @@ if load_mode == "pickle":
         "arbitrary code. We loaded it because you uploaded it -- only do this "
         "with files you trust."
     )
+
+# ---------------------------------------------------------------------------
+# "What works on your file" -- honest summary right after the upload, so the
+# user sees up front whether their checkpoint unlocks the heavier features.
+# ---------------------------------------------------------------------------
+
+from torch import nn as _nn  # noqa: E402
+
+_is_module = isinstance(ss["original_obj"], _nn.Module)
+_format_label = "Pickled module" if _is_module else "State-dict"
+_format_hint = (
+    "Your file deserialised into a live <code>nn.Module</code> "
+    "-- everything in the workshop is available."
+    if _is_module else
+    "Your file deserialised into a state-dict (weights only). "
+    "Custom-architecture models like BEVFusion, YOLOP, mmdet, etc. "
+    "ship like this -- their classes live in their repo's Python "
+    "code, which this tool can't import."
+)
+_status_bg = "#dcfce7" if _is_module else "#fef3c7"
+_status_bd = "#86efac" if _is_module else "#fcd34d"
+_status_fg = "#15803d" if _is_module else "#92400e"
+st.markdown(
+    f"""
+    <div style="border:1px solid {_status_bd};background:{_status_bg};
+                 padding:14px 18px;margin:2px 0 18px;
+                 font-size:0.92rem;color:#202F46;line-height:1.55;">
+      <div style="font-size:0.72rem;letter-spacing:.14em;color:{_status_fg};
+                   font-weight:800;margin-bottom:6px;">
+        FORMAT DETECTED &nbsp;·&nbsp; {_format_label.upper()}
+      </div>
+      <div>{_format_hint}</div>
+      <div style="margin-top:8px;">
+        <b>Available on your file:</b> FP16 cast &nbsp;·&nbsp;
+        L1 unstructured pruning &nbsp;·&nbsp; FP16 + pruning stacked
+        {("&nbsp;·&nbsp; <b>Dynamic INT8</b> &nbsp;·&nbsp; "
+          "<b>Structured pruning</b> &nbsp;·&nbsp; "
+          "<b>ONNX export</b> &nbsp;·&nbsp; "
+          "<b>Image inference</b>") if _is_module else ""}
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 # ---------------------------------------------------------------------------
 # Two-tab structure: 1. Audit  ·  2. Optimization
