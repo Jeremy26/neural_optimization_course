@@ -92,14 +92,25 @@ def _ensure_module(obj):
 
 
 def make_efficient(obj: Any) -> tuple[Any, Snippet]:
-    """Half-precision: cast every FP32 weight to FP16."""
-    sd, kind = _state_dict_copy(obj)
-    if kind == "unknown":
-        return obj, _SNIPPET_HALF
-    for k, v in list(sd.items()):
-        if isinstance(v, torch.Tensor) and v.dtype == torch.float32:
-            sd[k] = v.half()
-    return _rebuild(obj, sd, kind), _SNIPPET_HALF
+    """Half-precision: cast every FP32 weight to FP16.
+
+    For ``nn.Module`` inputs we call ``.half()`` on a deep copy directly --
+    routing the cast tensors through ``load_state_dict`` silently upcasts
+    them back to FP32 because the destination parameters are still FP32.
+    """
+    if isinstance(obj, nn.Module):
+        return copy.deepcopy(obj).half(), _SNIPPET_HALF
+    if isinstance(obj, dict):
+        new_sd = {}
+        for k, v in obj.items():
+            if isinstance(v, torch.Tensor) and v.dtype == torch.float32:
+                new_sd[k] = v.detach().clone().half()
+            elif isinstance(v, torch.Tensor):
+                new_sd[k] = v.detach().clone()
+            else:
+                new_sd[k] = v
+        return new_sd, _SNIPPET_HALF
+    return obj, _SNIPPET_HALF
 
 
 _SNIPPET_HALF = Snippet(
@@ -373,6 +384,11 @@ class TechniqueOption:
     description: str
     notebook: str
     apply: callable     # callable(obj) -> (new_obj, Snippet) or (obj, Snippet, err)
+    # Optional URL to a walkthrough video.  When set, the workshop renders
+    # an embedded player above the Apply button; otherwise it shows a
+    # "video coming soon" placeholder slot that's visually styled to match
+    # the dark workshop panel.
+    video_url: str | None = None
 
 
 TECHNIQUES: list[TechniqueOption] = [
@@ -386,6 +402,7 @@ TECHNIQUES: list[TechniqueOption] = [
         ),
         notebook="Mini_Quantization.ipynb",
         apply=make_efficient,
+        video_url=None,
     ),
     TechniqueOption(
         key="dynamic_quant",
@@ -397,6 +414,7 @@ TECHNIQUES: list[TechniqueOption] = [
         ),
         notebook="Mini_Quantization.ipynb",
         apply=make_dynamic_quantized,
+        video_url=None,
     ),
     TechniqueOption(
         key="prune_unstructured",
@@ -408,6 +426,7 @@ TECHNIQUES: list[TechniqueOption] = [
         ),
         notebook="Mini_Pruning.ipynb",
         apply=make_lean,
+        video_url=None,
     ),
     TechniqueOption(
         key="prune_structured",
@@ -419,6 +438,7 @@ TECHNIQUES: list[TechniqueOption] = [
         ),
         notebook="Mini_Pruning.ipynb",
         apply=make_structured_pruned,
+        video_url=None,
     ),
     TechniqueOption(
         key="stack",
@@ -430,5 +450,6 @@ TECHNIQUES: list[TechniqueOption] = [
         ),
         notebook="Mini_Pruning.ipynb",
         apply=make_compact,
+        video_url=None,
     ),
 ]

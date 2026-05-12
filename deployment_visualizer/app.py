@@ -34,20 +34,21 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-      /* ============ PAGE CHROME ============
-         Light theme by default.  Tab 4 paints itself dark below. */
-      .stApp { background: #f8fafc; }
-      /* Push content below Streamlit's floating toolbar (Deploy button etc.) */
-      .block-container {
-        padding-top: 4rem; max-width: 1320px;
-      }
+      /* ============ PALETTE ============
+         Black & white industrial palette with electric blue as the single
+         accent.  Audit (Tab 1) is white-on-near-black-text; Workshop
+         (Tab 2) flips to pure black-on-white-text.  No warm tones. */
+
+      /* ============ PAGE CHROME ============ */
+      .stApp { background: #ffffff; }
+      .block-container { padding-top: 4rem; max-width: 1320px; }
       [data-testid="stHeader"] {
-        background: rgba(248,250,252,0.85);
+        background: rgba(255,255,255,0.85);
         backdrop-filter: blur(6px);
       }
 
       /* ============ TYPOGRAPHY ============ */
-      h1, h2, h3, h4, h5, h6 { color: #0f172a !important; letter-spacing: -0.005em; }
+      h1, h2, h3, h4, h5, h6 { color: #202F46 !important; letter-spacing: -0.01em; }
       h1 { font-size: 2.0rem; font-weight: 800; }
       h2 { font-size: 1.5rem; font-weight: 800; }
       h3 {
@@ -56,54 +57,55 @@ st.markdown(
       }
       h3::before {
         content: ""; position: absolute; left: 0; top: 0.2em; bottom: 0.2em;
-        width: 4px; border-radius: 2px; background: #f59e0b;
+        width: 3px; background: #202F46;
       }
       h4 { font-size: 1.05rem; font-weight: 700; margin-top: 1.2rem; }
-      .stMarkdown p, .stMarkdown li { color: #334155; }
-      [data-testid="stCaptionContainer"] { color: #64748b; }
+      .stMarkdown p, .stMarkdown li { color: #1a1a1a; }
+      [data-testid="stCaptionContainer"] { color: #595959; }
 
       /* ============ TABS ============ */
       .stTabs [data-baseweb="tab-list"] {
-        gap: 4px; border-bottom: 1px solid #e2e8f0;
+        gap: 2px; border-bottom: 1px solid #d4d4d4;
       }
       .stTabs [data-baseweb="tab"] {
-        height: 48px; padding: 0 22px;
-        background: white;
-        border: 1px solid #e2e8f0; border-bottom: none;
-        border-radius: 8px 8px 0 0;
-        color: #64748b !important;
-        font-weight: 700; font-size: 0.95rem;
+        height: 46px; padding: 0 26px;
+        background: #fafafa;
+        border: 1px solid #d4d4d4; border-bottom: none;
+        border-radius: 0;
+        color: #525252 !important;
+        font-weight: 700; font-size: 0.92rem;
+        text-transform: uppercase; letter-spacing: .06em;
       }
       .stTabs [data-baseweb="tab"]:hover {
-        color: #0f172a !important; background: #f1f5f9;
+        color: #202F46 !important; background: #f5f5f5;
       }
       .stTabs [aria-selected="true"] {
-        color: #0f172a !important;
-        background: #fff7ed !important;
-        border-color: #fdba74 !important;
-        box-shadow: inset 0 2px 0 #f59e0b;
+        color: #ffffff !important;
+        background: #202F46 !important;
+        border-color: #202F46 !important;
+        box-shadow: inset 0 -3px 0 #0e80e5;
       }
 
-      /* ============ CARDS (light) ============ */
+      /* ============ CARDS ============ */
       .metric-card {
-        border: 1px solid #e2e8f0; border-radius: 10px;
+        border: 1px solid #d4d4d4; border-radius: 0;
         padding: 18px 20px 16px; background: white;
-        box-shadow: 0 1px 2px rgba(15,23,42,0.04);
+        box-shadow: none;
       }
       .metric-label {
-        font-size: 0.72rem; color: #64748b;
+        font-size: 0.72rem; color: #595959;
         text-transform: uppercase; letter-spacing: .14em; font-weight: 700;
       }
       .metric-value {
-        font-size: 2.0rem; font-weight: 800; line-height: 1.1; color: #0f172a;
+        font-size: 2.0rem; font-weight: 800; line-height: 1.1; color: #202F46;
       }
-      .metric-sub { font-size: 0.92rem; color: #475569; margin-top: 4px; }
+      .metric-sub { font-size: 0.92rem; color: #3f3f3f; margin-top: 4px; }
 
       /* ============ BADGES ============ */
       .arch-badge {
-        display: inline-block; padding: 5px 12px; border-radius: 6px;
-        background: #e0f2fe; border: 1px solid #7dd3fc;
-        color: #075985; font-weight: 700;
+        display: inline-block; padding: 4px 12px; border-radius: 0;
+        background: #f5f5f5; border: 1px solid #d4d4d4;
+        color: #202F46; font-weight: 700;
         font-size: 0.78rem; letter-spacing: .04em;
         margin-right: 6px; margin-bottom: 4px;
         font-family: ui-monospace, "SF Mono", Menlo, monospace;
@@ -112,59 +114,81 @@ st.markdown(
       /* ============ STATUS PILL ============ */
       .status-pill {
         display: inline-flex; align-items: center; gap: 8px;
-        padding: 6px 14px; border-radius: 999px;
-        background: #ecfdf5; border: 1px solid #a7f3d0;
-        color: #047857; font-size: 0.78rem; font-weight: 700;
-        letter-spacing: .12em;
+        padding: 5px 14px; border-radius: 0;
+        background: #202F46; border: 1px solid #202F46;
+        color: #ffffff; font-size: 0.74rem; font-weight: 700;
+        letter-spacing: .14em;
         font-family: ui-monospace, "SF Mono", Menlo, monospace;
       }
       .status-pill::before {
         content: ""; width: 8px; height: 8px; border-radius: 50%;
-        background: #10b981; box-shadow: 0 0 8px #10b981;
+        background: #0e80e5; box-shadow: 0 0 8px #0e80e5;
         animation: pulse 1.6s ease-in-out infinite;
       }
-      @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .5; } }
+      @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
 
       /* ============ BUTTONS ============ */
       .stButton > button[kind="primary"] {
-        background: #f59e0b !important; border: 1px solid #b45309;
-        color: #0c0a09 !important; font-weight: 800;
-        letter-spacing: .04em; text-transform: uppercase;
+        background: #202F46 !important; border: 1px solid #202F46;
+        color: #ffffff !important; font-weight: 700;
+        letter-spacing: .08em; text-transform: uppercase;
+        border-radius: 0;
       }
-      .stButton > button[kind="primary"]:hover { background: #fbbf24 !important; }
+      .stButton > button[kind="primary"]:hover {
+        background: #0e80e5 !important; border-color: #0e80e5;
+      }
+      .stButton > button[kind="secondary"] {
+        background: #ffffff;
+        border: 1px solid #202F46;
+        color: #202F46 !important; font-weight: 700;
+        letter-spacing: .08em; text-transform: uppercase;
+        border-radius: 0;
+      }
+      .stButton > button[kind="secondary"]:hover {
+        background: #202F46;
+        color: #ffffff !important;
+      }
       .stDownloadButton > button {
-        background: #ecfeff; border: 1px solid #67e8f9;
-        color: #0e7490 !important; font-weight: 800;
-        letter-spacing: .04em; text-transform: uppercase;
+        background: #0e80e5;
+        border: 1px solid #0e80e5;
+        color: #ffffff !important; font-weight: 700;
+        letter-spacing: .08em; text-transform: uppercase;
+        border-radius: 0;
       }
-      .stDownloadButton > button:hover { background: #cffafe; }
+      .stDownloadButton > button:hover {
+        background: #0a66b8; border-color: #0a66b8;
+      }
 
       /* ============ INLINE CODE ============ */
       [data-testid="stMarkdownContainer"] code {
-        background: #ecfeff; border: 1px solid #a5f3fc;
-        border-radius: 4px; padding: 1px 6px;
-        color: #0e7490; font-size: 0.88em;
+        background: #f5f5f5; border: 1px solid #d4d4d4;
+        border-radius: 0; padding: 1px 6px;
+        color: #202F46; font-size: 0.88em;
         font-family: ui-monospace, "SF Mono", Menlo, monospace;
       }
 
+      /* ============ FILE UPLOADER ============ */
+      [data-testid="stFileUploaderDropzone"] {
+        background: #fafafa;
+        border: 2px dashed #a3a3a3;
+        border-radius: 0;
+      }
+      [data-testid="stFileUploaderDropzone"]:hover {
+        border-color: #0e80e5; background: #f5f5f5;
+      }
+
+      /* ============ RADIO (technique chooser inside workshop) ============ */
+      .stRadio > label, .stRadio > div { gap: 8px; }
+
       /* =================================================================
-         WORKSHOP ZONE -- target the 4th tab panel only.
-         Streamlit renders all tab panels in the DOM; nth-of-type(2) is the
-         Optimization tab.  Everything inside flips to dark.
+         WORKSHOP ZONE -- Tab 2 panel.  Pure-black factory floor with
+         blue as the only accent.  Crisp white text, no warm tones.
          ================================================================= */
       .stTabs [role="tabpanel"]:nth-of-type(2) {
-        background:
-          radial-gradient(800px 400px at 0% 0%, rgba(245,158,11,0.10), transparent 60%),
-          radial-gradient(800px 400px at 100% 0%, rgba(34,211,238,0.08), transparent 60%),
-          #0a0f1f;
-        background-image:
-          linear-gradient(rgba(148,163,184,0.06) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(148,163,184,0.06) 1px, transparent 1px),
-          linear-gradient(180deg, #0a0f1f 0%, #060914 100%);
-        background-size: 36px 36px, 36px 36px, 100% 100%;
-        border: 1px solid #1f2937;
-        border-top: 2px solid #f59e0b;
-        border-radius: 0 0 14px 14px;
+        background: #000000;
+        border: 1px solid #000000;
+        border-top: 3px solid #0e80e5;
+        border-radius: 0;
         padding: 28px 28px 32px;
         margin-top: -1px;
       }
@@ -172,41 +196,61 @@ st.markdown(
       .stTabs [role="tabpanel"]:nth-of-type(2) h2,
       .stTabs [role="tabpanel"]:nth-of-type(2) h3,
       .stTabs [role="tabpanel"]:nth-of-type(2) h4 {
-        color: #f8fafc !important;
+        color: #ffffff !important;
       }
       .stTabs [role="tabpanel"]:nth-of-type(2) h3::before {
-        background: #f59e0b;
+        background: #0e80e5;
       }
       .stTabs [role="tabpanel"]:nth-of-type(2) .stMarkdown p,
       .stTabs [role="tabpanel"]:nth-of-type(2) .stMarkdown li,
       .stTabs [role="tabpanel"]:nth-of-type(2) [data-testid="stCaptionContainer"] {
-        color: #cbd5e1;
+        color: #d4d4d4;
       }
       .stTabs [role="tabpanel"]:nth-of-type(2) .metric-card {
-        background: #111827;
-        border-color: rgba(148,163,184,0.18);
-        box-shadow: none;
+        background: #0f0f0f;
+        border-color: #262626;
       }
-      .stTabs [role="tabpanel"]:nth-of-type(2) .metric-label { color: #94a3b8; }
-      .stTabs [role="tabpanel"]:nth-of-type(2) .metric-value { color: #f8fafc; }
-      .stTabs [role="tabpanel"]:nth-of-type(2) .metric-sub   { color: #cbd5e1; }
+      .stTabs [role="tabpanel"]:nth-of-type(2) .metric-label { color: #a3a3a3; }
+      .stTabs [role="tabpanel"]:nth-of-type(2) .metric-value { color: #ffffff; }
+      .stTabs [role="tabpanel"]:nth-of-type(2) .metric-sub   { color: #d4d4d4; }
       .stTabs [role="tabpanel"]:nth-of-type(2) [data-testid="stMarkdownContainer"] code {
-        background: rgba(34,211,238,0.10);
-        border: 1px solid rgba(34,211,238,0.30);
-        color: #67e8f9;
+        background: #0f0f0f; border: 1px solid #404040;
+        color: #7bbef0;
       }
       .stTabs [role="tabpanel"]:nth-of-type(2) .stAlert {
-        background: rgba(34,211,238,0.06);
-        border: 1px solid rgba(34,211,238,0.30);
-        color: #cbd5e1;
+        background: #0f0f0f;
+        border: 1px solid #262626;
+        color: #d4d4d4;
       }
       .stTabs [role="tabpanel"]:nth-of-type(2) [data-testid="stExpander"] {
-        background: #111827;
-        border: 1px solid rgba(148,163,184,0.18);
+        background: #0f0f0f;
+        border: 1px solid #262626;
       }
       .stTabs [role="tabpanel"]:nth-of-type(2) [data-testid="stExpander"] summary,
-      .stTabs [role="tabpanel"]:nth-of-type(2) [data-testid="stExpander"] p {
-        color: #e2e8f0 !important;
+      .stTabs [role="tabpanel"]:nth-of-type(2) [data-testid="stExpander"] p,
+      .stTabs [role="tabpanel"]:nth-of-type(2) [data-testid="stExpander"] label {
+        color: #ffffff !important;
+      }
+      /* Radio labels inside workshop need explicit white */
+      .stTabs [role="tabpanel"]:nth-of-type(2) .stRadio label,
+      .stTabs [role="tabpanel"]:nth-of-type(2) .stRadio p {
+        color: #ffffff !important;
+      }
+      /* Primary "Apply" button stays black-on-white inside the workshop --
+         that's the strongest contrast against a black panel. */
+      .stTabs [role="tabpanel"]:nth-of-type(2) .stButton > button[kind="primary"] {
+        background: #ffffff !important; border-color: #ffffff;
+        color: #202F46 !important;
+      }
+      .stTabs [role="tabpanel"]:nth-of-type(2) .stButton > button[kind="primary"]:hover {
+        background: #0e80e5 !important; border-color: #0e80e5;
+        color: #ffffff !important;
+      }
+      .stTabs [role="tabpanel"]:nth-of-type(2) .stButton > button[kind="secondary"] {
+        background: #0f0f0f; border-color: #525252; color: #ffffff !important;
+      }
+      .stTabs [role="tabpanel"]:nth-of-type(2) .stButton > button[kind="secondary"]:hover {
+        background: #0e80e5; border-color: #0e80e5;
       }
     </style>
     """,
@@ -325,32 +369,32 @@ st.markdown(
     <div style="display:flex;justify-content:space-between;align-items:center;
                  flex-wrap:wrap;gap:14px;margin-bottom:18px;">
       <div style="display:flex;align-items:center;gap:14px;">
-        <div style="width:48px;height:48px;border-radius:10px;
-                     background:#f59e0b;
+        <div style="width:48px;height:48px;
+                     background:#202F46;
                      display:flex;align-items:center;justify-content:center;
                      font-family:ui-monospace,monospace;font-weight:900;
-                     font-size:1.5rem;color:#0c0a09;
-                     box-shadow:0 6px 14px rgba(245,158,11,0.35);">
+                     font-size:1.5rem;color:#ffffff;
+                     border:2px solid #202F46;">
           ⌬
         </div>
         <div>
           <div style="font-size:0.72rem;letter-spacing:.18em;
-                       color:#64748b;font-weight:700;">
+                       color:#595959;font-weight:700;">
             DEPLOYMENT QUALIFICATION TERMINAL
           </div>
           <div style="font-size:2.0rem;font-weight:800;line-height:1.1;
-                       margin-top:2px;color:#0f172a;">
+                       margin-top:2px;color:#202F46;">
             Deploy/X &nbsp;·&nbsp; Model Health Audit
           </div>
         </div>
       </div>
       <div class="status-pill">SYSTEM ONLINE</div>
     </div>
-    <div style="font-size:0.98rem;color:#334155;line-height:1.55;
+    <div style="font-size:0.98rem;color:#1a1a1a;line-height:1.55;
                  max-width:820px;margin-bottom:8px;">
       Drop a PyTorch checkpoint and we'll tell you what's wrong with it on the
       way to a robot, a self-driving car, or any hardware that has to run it
-      for real. Then <b style="color:#b45309;">fix it in the workshop</b>
+      for real. Then <b style="color:#0e80e5;">fix it in the workshop</b>
       and walk out with a deploy-grade <code>.onnx</code> file.
     </div>
     """,
@@ -534,41 +578,40 @@ with tab_optimization:
     opt_report = ss.get("optimized_report") or original_report
     has_applied = bool(ss.get("applied_actions"))
 
-    # Workshop banner: amber accent, distinct from the cyan elsewhere,
-    # so this tab visually reads as a different room of the factory.
+    # Workshop banner: factory-floor look -- black background, blue accent,
+    # mono-style CURRENT CHAIN readout.
     chain = " → ".join(ss["applied_actions"]) if has_applied else "Untouched"
     st.markdown(
         f"""
-        <div style="border:1px solid rgba(245,158,11,0.45);
-                     border-left:5px solid #f59e0b;
-                     background:linear-gradient(160deg,
-                                                 rgba(245,158,11,0.10),
-                                                 rgba(15,23,42,0.0));
-                     border-radius:12px;padding:18px 22px;
-                     margin-bottom:18px;">
+        <div style="border:1px solid #262626;
+                     border-left:4px solid #0e80e5;
+                     background:#0f0f0f;
+                     padding:18px 22px;margin-bottom:22px;">
           <div style="display:flex;justify-content:space-between;
                        align-items:center;flex-wrap:wrap;gap:14px;">
             <div>
-              <div style="font-size:0.72rem;letter-spacing:.16em;
-                           font-weight:800;color:#f59e0b;">
-                OPTIMIZATION ZONE
+              <div style="font-size:0.72rem;letter-spacing:.18em;
+                           font-weight:800;color:#0e80e5;">
+                THE WORKSHOP
               </div>
               <div style="font-size:1.4rem;font-weight:800;
-                           margin-top:4px;line-height:1.2;">
-                The workshop
+                           margin-top:4px;line-height:1.2;color:#ffffff;">
+                Stack optimizations. Export when ready.
               </div>
-              <div style="font-size:0.92rem;color:#cbd5e1;
+              <div style="font-size:0.92rem;color:#d4d4d4;
                            margin-top:4px;">
-                Stack techniques on top of each other. The other tabs
-                stay frozen on the file you uploaded.
+                Each technique applies on top of the previous one.
+                The audit tab stays frozen on your original file.
               </div>
             </div>
-            <div style="text-align:right;">
-              <div style="font-size:0.72rem;color:#94a3b8;
-                           letter-spacing:.1em;">CURRENT CHAIN</div>
+            <div style="text-align:right;min-width:180px;">
+              <div style="font-size:0.72rem;color:#a3a3a3;
+                           letter-spacing:.14em;font-weight:700;">
+                CURRENT CHAIN
+              </div>
               <div style="font-family:ui-monospace,monospace;
-                           font-size:0.95rem;font-weight:700;
-                           color:#fcd34d;margin-top:4px;
+                           font-size:0.92rem;font-weight:700;
+                           color:#7bbef0;margin-top:4px;
                            max-width:480px;overflow-wrap:anywhere;">
                 {chain}
               </div>
@@ -586,6 +629,7 @@ with tab_optimization:
     technique_descriptions = {t.key: t.description for t in TECHNIQUES}
     technique_notebooks = {t.key: t.notebook for t in TECHNIQUES}
     technique_apply = {t.key: t.apply for t in TECHNIQUES}
+    technique_videos = {t.key: t.video_url for t in TECHNIQUES}
 
     chosen = st.radio(
         "Technique",
@@ -595,8 +639,43 @@ with tab_optimization:
         key="opt_technique",
         label_visibility="collapsed",
     )
-    st.info(technique_descriptions[chosen])
-    st.caption(f"Course material: `{technique_notebooks[chosen]}` in this repo.")
+
+    # Two-column layout: description on the left, video walkthrough on the
+    # right.  When ``video_url`` isn't set yet, the right column shows a
+    # placeholder card so the slot is clearly reserved for a future clip.
+    desc_col, vid_col = st.columns([3, 2])
+    with desc_col:
+        st.info(technique_descriptions[chosen])
+        st.caption(
+            f"Course material: `{technique_notebooks[chosen]}` in this repo."
+        )
+    with vid_col:
+        video_url = technique_videos.get(chosen)
+        if video_url:
+            st.video(video_url)
+        else:
+            st.markdown(
+                f"""
+                <div style="border:1px dashed #404040;
+                             background:#0f0f0f;
+                             padding:18px 20px;
+                             min-height:140px;display:flex;flex-direction:column;
+                             align-items:center;justify-content:center;
+                             text-align:center;">
+                  <div style="font-size:1.6rem;color:#0e80e5;
+                               margin-bottom:6px;">▶</div>
+                  <div style="font-size:0.92rem;color:#ffffff;
+                               font-weight:700;margin-bottom:2px;">
+                    Walkthrough: {technique_labels[chosen]}
+                  </div>
+                  <div style="font-size:0.78rem;color:#a3a3a3;
+                               letter-spacing:.04em;">
+                    Video coming soon
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
     btn_apply, btn_reset, btn_dl = st.columns([2, 1, 1])
     with btn_apply:
@@ -658,31 +737,34 @@ with tab_optimization:
     last = ss.get("last_snippet")
     if last:
         snippet, err = last
-        accent = "#ef4444" if err else "#86efac"
-        result_html = (
-            f"<span style='color:{accent};font-weight:700;'>FAILED</span> &middot; {err}"
-            if err else
-            "<span style='color:#86efac;font-weight:700;'>OK</span> &middot; applied to the chain"
-        )
+        if err:
+            result_html = (
+                f"<span style='color:#fca5a5;font-weight:700;'>FAILED</span>"
+                f" &middot; <span style='color:#a3a3a3;'>{err}</span>"
+            )
+        else:
+            result_html = (
+                "<span style='color:#7bbef0;font-weight:700;'>OK</span>"
+                " &middot; <span style='color:#a3a3a3;'>applied to the chain</span>"
+            )
         st.markdown(
             f"""
-            <div style="border:1px solid rgba(245,158,11,0.30);
-                         background:rgba(15,23,42,0.35);
-                         border-radius:12px;padding:14px 18px;
-                         margin:14px 0 6px;">
+            <div style="border:1px solid #262626;
+                         background:#0f0f0f;
+                         padding:14px 18px;margin:14px 0 6px;">
               <div style="display:flex;justify-content:space-between;
                            align-items:baseline;margin-bottom:8px;">
-                <div style="font-size:0.72rem;letter-spacing:.16em;
-                             font-weight:800;color:#f59e0b;">
+                <div style="font-size:0.72rem;letter-spacing:.18em;
+                             font-weight:800;color:#0e80e5;">
                   CODE REVIEW
                 </div>
-                <div style="font-size:0.78rem;color:#94a3b8;">
+                <div style="font-size:0.78rem;">
                   {result_html}
                 </div>
               </div>
               <div style="font-size:1.05rem;font-weight:700;
-                           margin-bottom:4px;">{snippet.title}</div>
-              <div style="font-size:0.9rem;color:#cbd5e1;
+                           margin-bottom:4px;color:#ffffff;">{snippet.title}</div>
+              <div style="font-size:0.9rem;color:#d4d4d4;
                            margin-bottom:6px;">{snippet.summary}</div>
             </div>
             """,
@@ -716,7 +798,7 @@ with tab_optimization:
               </div>
               <div class="metric-card" style="padding:14px 16px;">
                 <div class="metric-label">FP16</div>
-                <div style="font-size:1.4rem;font-weight:800;color:#fcd34d;
+                <div style="font-size:1.4rem;font-weight:800;color:#7bbef0;
                              margin:4px 0;">16 bits</div>
                 <div class="metric-sub">Half the memory, same accuracy
                 for almost any inference task.</div>
