@@ -16,6 +16,12 @@ import cv2
 import numpy as np
 import torch
 
+# The JetPack 6.1 + Nvidia-alpha-torch + manually-installed cuDNN 8.9 stack
+# can fail with "GET was unable to find an engine" inside cuDNN's heuristic
+# search. Force PyTorch to use its native CUDA kernels instead — still the
+# slow side of the demo (which is the point) and avoids the lookup error.
+torch.backends.cudnn.enabled = False
+
 import tensorrt as trt
 import pycuda.driver as cuda
 import pycuda.autoinit  # noqa: F401  (initializes CUDA context)
