@@ -19,6 +19,9 @@ from collections import deque
 import cv2
 import numpy as np
 
+# Import + initialize ORT BEFORE pycuda so ORT owns the primary CUDA context;
+# pycuda.autoinit on JP6.1 + cuDNN 8.9 has been observed to leave the cuDNN
+# handle in a state that breaks ORT's first conv.
 import onnxruntime as ort
 import tensorrt as trt
 import pycuda.driver as cuda
@@ -48,13 +51,24 @@ def preprocess_bgr(bgr: np.ndarray, H: int, W: int) -> np.ndarray:
 
 def load_ort_session(onnx_path: str, provider: str):
     """provider: 'cpu' or 'cuda'."""
-    eps = {
-        "cpu":  ["CPUExecutionProvider"],
-        "cuda": ["CUDAExecutionProvider", "CPUExecutionProvider"],
-    }[provider]
-    sess = ort.InferenceSession(onnx_path, providers=eps)
+    if provider == "cuda":
+        # Force conservative cuDNN settings — the exhaustive algo picker has
+        # been seen to select an algo that crashes inside cudnnConvolutionForward
+        # on JP6.1 + manually-installed cuDNN 8.9.
+        providers = [
+            ("CUDAExecutionProvider", {
+                "device_id": 0,
+                "cudnn_conv_algo_search": "DEFAULT",
+                "cudnn_conv_use_max_workspace": "0",
+                "do_copy_in_default_stream": "1",
+            }),
+            "CPUExecutionProvider",
+        ]
+    else:
+        providers = ["CPUExecutionProvider"]
+    sess = ort.InferenceSession(onnx_path, providers=providers)
     actual = sess.get_providers()
-    print(f"ONNX Runtime providers requested={eps} active={actual}")
+    print(f"ONNX Runtime providers active={actual}")
     return sess, sess.get_inputs()[0].name
 
 
