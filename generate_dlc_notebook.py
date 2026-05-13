@@ -44,21 +44,21 @@ print(f"GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'n
 nb.cells.append(new_markdown_cell("---\n## 1. Download Data & Models"))
 
 nb.cells.append(new_code_cell("""\
-!mkdir -p /content/data /content/models
+!mkdir -p /ssd/data /ssd/models
 
 # Waymo driving frames
-!wget -qq https://optical-flow-data.s3.eu-west-3.amazonaws.com/waymo_images.zip -O /content/data/waymo.zip
-!unzip -qq /content/data/waymo.zip -d /content/data/
+!wget -qq https://optical-flow-data.s3.eu-west-3.amazonaws.com/waymo_images.zip -O /ssd/data/waymo.zip
+!unzip -qq /ssd/data/waymo.zip -d /ssd/data/
 
 # SceneSeg — PyTorch traced model
-!gdown '1G2pKrjEGLGY1ouQdNPh11N-5LlmDI7ES' -O /content/models/SceneSeg_traced.pt
+!gdown '1G2pKrjEGLGY1ouQdNPh11N-5LlmDI7ES' -O /ssd/models/SceneSeg_traced.pt
 
 # SceneSeg — ONNX models (FP32 + others, pre-exported by Autoware)
-!gdown -O /content/models/ 'https://docs.google.com/uc?export=download&id=1l-dniunvYyFKvLD7k16Png3AsVTuMl9f'
-!gdown -O /content/models/ 'https://docs.google.com/uc?export=download&id=19gMPt_1z4eujo4jm5XKuH-8eafh-wJC6'
-!gdown -O /content/models/ 'https://docs.google.com/uc?export=download&id=1zCworKw4aQ9_hDBkHfj1-sXitAAebl5Y'
+!gdown -O /ssd/models/ 'https://docs.google.com/uc?export=download&id=1l-dniunvYyFKvLD7k16Png3AsVTuMl9f'
+!gdown -O /ssd/models/ 'https://docs.google.com/uc?export=download&id=19gMPt_1z4eujo4jm5XKuH-8eafh-wJC6'
+!gdown -O /ssd/models/ 'https://docs.google.com/uc?export=download&id=1zCworKw4aQ9_hDBkHfj1-sXitAAebl5Y'
 
-for f in sorted(glob.glob('/content/models/*')):
+for f in sorted(glob.glob('/ssd/models/*')):
     print(f"  {Path(f).name:<40} {os.path.getsize(f)/1e6:.1f} MB")"""))
 
 # ── 2. PyTorch ────────────────────────────────────────────────────────────────
@@ -78,14 +78,14 @@ nb.cells.append(new_code_cell("""\
 # Inspect all downloaded ONNX files — pick the one with 3 output classes (= SceneSeg)
 print(f"{'File':<40} {'Input shape':<22} {'Output shape'}")
 print('-' * 80)
-for f in sorted(glob.glob('/content/models/*.onnx')):
+for f in sorted(glob.glob('/ssd/models/*.onnx')):
     s = ort.InferenceSession(f, providers=['CPUExecutionProvider'])
     i = s.get_inputs()[0]; o = s.get_outputs()[0]
     print(f"{Path(f).name:<40} {str(i.shape):<22} {o.shape}")
 
 # SceneSeg has 3 output classes (background / foreground / road)
 ONNX_PATH = next(
-    f for f in sorted(glob.glob('/content/models/*.onnx'))
+    f for f in sorted(glob.glob('/ssd/models/*.onnx'))
     if ort.InferenceSession(f, providers=['CPUExecutionProvider']).get_outputs()[0].shape[1] == 3
 )
 print(f"\\nSelected: {Path(ONNX_PATH).name}")
@@ -98,14 +98,14 @@ print(f"Input size: {H} × {W}")"""))
 
 nb.cells.append(new_code_cell("""\
 # Load the PyTorch traced model
-model = torch.jit.load('/content/models/SceneSeg_traced.pt', map_location='cpu')
+model = torch.jit.load('/ssd/models/SceneSeg_traced.pt', map_location='cpu')
 model.eval()
 print("Model loaded")"""))
 
 nb.cells.append(new_code_cell("""\
 # Load a Waymo frame and preprocess it
-frames = sorted(glob.glob('/content/data/**/*.jpg', recursive=True)
-              + glob.glob('/content/data/**/*.png', recursive=True))
+frames = sorted(glob.glob('/ssd/data/**/*.jpg', recursive=True)
+              + glob.glob('/ssd/data/**/*.png', recursive=True))
 
 frame_bgr = cv2.imread(frames[0])
 frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
