@@ -59,9 +59,9 @@ python3 compare_runtimes.py \
     --display --loop
 ```
 
-Output: top panel = ONNX Runtime (CPU EP — the "naive deploy"), bottom panel =
-TensorRT FP16 on the GPU. Each panel has a live FPS + latency overlay. Pass
-`--ort-provider cuda` to use ORT-CUDA as the "before" baseline instead of CPU.
+Output: top panel = ONNX Runtime on the GPU (CUDA EP — the "before"), bottom panel =
+TensorRT FP16 on the GPU (the "after"). Each panel has a live FPS + latency
+overlay. Pass `--ort-provider cpu` if you ever want the CPU baseline instead.
 
 ---
 

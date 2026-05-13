@@ -141,9 +141,9 @@ def main():
                     help="Run forever; live mode only ('q' to quit)")
     ap.add_argument("--height", type=int, default=320, help="Model input H")
     ap.add_argument("--width", type=int, default=640, help="Model input W")
-    ap.add_argument("--ort-provider", choices=["cpu", "cuda"], default="cpu",
+    ap.add_argument("--ort-provider", choices=["cuda", "cpu"], default="cuda",
                     help="ORT execution provider for the 'before' side "
-                         "(default: cpu — slow on purpose, dramatic gap)")
+                         "(default: cuda — GPU-vs-GPU, real-world honest gap)")
     ap.add_argument("--display", action="store_true",
                     help="Also open a live OpenCV window (needs DISPLAY + GUI cv2)")
     args = ap.parse_args()
