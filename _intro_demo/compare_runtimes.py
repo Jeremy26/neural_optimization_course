@@ -15,8 +15,6 @@ from collections import deque
 import cv2
 import numpy as np
 import torch
-import torchvision.transforms as T
-from PIL import Image
 
 import tensorrt as trt
 import pycuda.driver as cuda
@@ -28,6 +26,20 @@ COLORS = np.array([
     [180,  60, 200],   # foreground (cars / pedestrians)
     [ 80, 200,  80],   # drivable road
 ], dtype=np.uint8)
+
+# ImageNet normalization — same constants torchvision.transforms.Normalize uses.
+IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+IMAGENET_STD  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+
+
+def preprocess_bgr(bgr: np.ndarray, H: int, W: int) -> torch.Tensor:
+    """BGR uint8 frame -> normalized (1,3,H,W) float32 tensor on CPU."""
+    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    rgb = cv2.resize(rgb, (W, H), interpolation=cv2.INTER_LINEAR)
+    arr = rgb.astype(np.float32) / 255.0
+    arr = (arr - IMAGENET_MEAN) / IMAGENET_STD
+    arr = np.transpose(arr, (2, 0, 1))[None, ...]   # HWC -> 1,C,H,W
+    return torch.from_numpy(np.ascontiguousarray(arr))
 
 
 def load_pytorch(pt_path: str, device: str):
@@ -124,12 +136,6 @@ def main():
     print(f"{len(frame_paths)} frames available")
 
     H, W = args.height, args.width
-    preprocess = T.Compose([
-        T.Resize((H, W)),
-        T.ToTensor(),
-        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
-
     panel_w, panel_h = W, H
     out_w = panel_w
     out_h = panel_h * 2 + 4   # 4px gutter between top/bottom panels
@@ -145,9 +151,7 @@ def main():
     n_frames = None if args.loop else args.fps * args.duration
     # Warmup — first runs are always slowest
     print("Warming up...")
-    warmup_img = cv2.imread(str(frame_paths[0]))
-    warmup_rgb = cv2.cvtColor(warmup_img, cv2.COLOR_BGR2RGB)
-    x = preprocess(Image.fromarray(warmup_rgb)).unsqueeze(0)
+    x = preprocess_bgr(cv2.imread(str(frame_paths[0])), H, W)
     for _ in range(5):
         with torch.no_grad():
             _ = pt_model(x.to(device)).cpu().numpy()
@@ -160,8 +164,7 @@ def main():
     while n_frames is None or i < n_frames:
         frame_path = frame_paths[i % len(frame_paths)]
         bgr = cv2.imread(str(frame_path))
-        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-        x = preprocess(Image.fromarray(rgb)).unsqueeze(0)
+        x = preprocess_bgr(bgr, H, W)
 
         # PyTorch eager
         t0 = time.perf_counter()
