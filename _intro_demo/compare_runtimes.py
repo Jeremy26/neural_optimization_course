@@ -1,13 +1,11 @@
 """Top/bottom comparison of SceneSeg on Orin:
-   TOP    — ONNX Runtime (CPU EP by default; --ort-provider cuda for GPU)
-   BOTTOM — TensorRT FP16 engine (always GPU)
+   TOP    — PyTorch eager mode (GPU) — the "before"
+   BOTTOM — TensorRT FP16 engine (GPU) — the "after"
 
 Both consume the same Waymo frames, frame by frame.
 Each panel shows running latency + FPS in an overlay.
 
-Default output is an MP4. Pass --display to also open a live window
-(requires DISPLAY + a cv2 build with GUI support — pip's headless wheel
-will print a warning and continue writing the MP4).
+Default output is an MP4. Pass --display to also open a live window.
 """
 import argparse
 import os
@@ -18,11 +16,8 @@ from collections import deque
 
 import cv2
 import numpy as np
+import torch
 
-# Import + initialize ORT BEFORE pycuda so ORT owns the primary CUDA context;
-# pycuda.autoinit on JP6.1 + cuDNN 8.9 has been observed to leave the cuDNN
-# handle in a state that breaks ORT's first conv.
-import onnxruntime as ort
 import tensorrt as trt
 import pycuda.driver as cuda
 import pycuda.autoinit  # noqa: F401  (initializes CUDA context)
@@ -34,13 +29,11 @@ COLORS = np.array([
     [ 80, 200,  80],   # drivable road
 ], dtype=np.uint8)
 
-# ImageNet normalization — same constants the model was trained with.
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 IMAGENET_STD  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 
 def preprocess_bgr(bgr: np.ndarray, H: int, W: int) -> np.ndarray:
-    """BGR uint8 frame -> normalized (1,3,H,W) float32 numpy array."""
     rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
     rgb = cv2.resize(rgb, (W, H), interpolation=cv2.INTER_LINEAR)
     arr = rgb.astype(np.float32) / 255.0
@@ -49,27 +42,10 @@ def preprocess_bgr(bgr: np.ndarray, H: int, W: int) -> np.ndarray:
     return np.ascontiguousarray(arr)
 
 
-def load_ort_session(onnx_path: str, provider: str):
-    """provider: 'cpu' or 'cuda'."""
-    if provider == "cuda":
-        # Force conservative cuDNN settings — the exhaustive algo picker has
-        # been seen to select an algo that crashes inside cudnnConvolutionForward
-        # on JP6.1 + manually-installed cuDNN 8.9.
-        providers = [
-            ("CUDAExecutionProvider", {
-                "device_id": 0,
-                "cudnn_conv_algo_search": "DEFAULT",
-                "cudnn_conv_use_max_workspace": "0",
-                "do_copy_in_default_stream": "1",
-            }),
-            "CPUExecutionProvider",
-        ]
-    else:
-        providers = ["CPUExecutionProvider"]
-    sess = ort.InferenceSession(onnx_path, providers=providers)
-    actual = sess.get_providers()
-    print(f"ONNX Runtime providers active={actual}")
-    return sess, sess.get_inputs()[0].name
+def load_pytorch(pt_path: str, device: str):
+    model = torch.jit.load(pt_path, map_location=device)
+    model.eval()
+    return model
 
 
 def load_engine(engine_path: str):
@@ -81,8 +57,6 @@ def load_engine(engine_path: str):
 
 
 class TRTRunner:
-    """Minimal TRT inference wrapper — single input, single output, batch=1."""
-
     def __init__(self, engine):
         self.engine = engine
         self.ctx = engine.create_execution_context()
@@ -107,7 +81,6 @@ class TRTRunner:
 
 
 def to_segmentation_image(logits: np.ndarray, target_size: tuple) -> np.ndarray:
-    """logits: (1, C, H, W) → BGR image at target_size (W, H)."""
     seg = np.argmax(logits[0], axis=0).astype(np.uint8)
     rgb = COLORS[seg]
     bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
@@ -129,7 +102,6 @@ def overlay_stats(img: np.ndarray, label: str, latency_ms: float, fps: float):
 
 
 def try_open_window(title: str) -> bool:
-    """Return True if cv2 can actually open a GUI window on this system."""
     if not os.environ.get("DISPLAY") and sys.platform != "win32":
         print("DISPLAY not set — skipping live window.")
         return False
@@ -143,26 +115,25 @@ def try_open_window(title: str) -> bool:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--onnx", required=True, help="SceneSeg_FP32.onnx")
+    ap.add_argument("--pt", required=True, help="SceneSeg_traced.pt")
     ap.add_argument("--engine", required=True, help="Built TRT FP16 .engine")
     ap.add_argument("--frames", required=True, help="Folder of .jpg frames")
     ap.add_argument("--out", default="orin_demo.mp4",
                     help="MP4 output path (default: ./orin_demo.mp4)")
     ap.add_argument("--fps", type=int, default=30)
-    ap.add_argument("--duration", type=int, default=30,
-                    help="Seconds to render (ignored with --loop)")
+    ap.add_argument("--duration", type=int, default=30)
     ap.add_argument("--loop", action="store_true",
-                    help="Run forever; live mode only ('q' to quit)")
-    ap.add_argument("--height", type=int, default=320, help="Model input H")
-    ap.add_argument("--width", type=int, default=640, help="Model input W")
-    ap.add_argument("--ort-provider", choices=["cuda", "cpu"], default="cuda",
-                    help="ORT execution provider for the 'before' side "
-                         "(default: cuda — GPU-vs-GPU, real-world honest gap)")
+                    help="Run forever (live mode only, no MP4)")
+    ap.add_argument("--height", type=int, default=320)
+    ap.add_argument("--width", type=int, default=640)
     ap.add_argument("--display", action="store_true",
-                    help="Also open a live OpenCV window (needs DISPLAY + GUI cv2)")
+                    help="Open a live OpenCV window in addition to writing MP4")
     args = ap.parse_args()
 
-    ort_sess, ort_in_name = load_ort_session(args.onnx, args.ort_provider)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"PyTorch device: {device}")
+
+    pt_model = load_pytorch(args.pt, device)
     trt_runner = TRTRunner(load_engine(args.engine))
     print("Models loaded")
 
@@ -183,19 +154,23 @@ def main():
     elif args.loop and args.out:
         print("--loop ignores --out; no MP4 will be written.")
 
-    win_title = "Orin demo — ORT (top) vs TensorRT FP16 (bottom)"
+    win_title = "Orin demo — PyTorch (top) vs TensorRT FP16 (bottom)"
     show_window = args.display and try_open_window(win_title)
 
-    ort_window = deque(maxlen=15)
+    pt_window = deque(maxlen=15)
     trt_window = deque(maxlen=15)
 
     n_frames = None if args.loop else args.fps * args.duration
 
     print("Warming up...")
-    x = preprocess_bgr(cv2.imread(str(frame_paths[0])), H, W)
-    for _ in range(3):
-        _ = ort_sess.run(None, {ort_in_name: x})[0]
-        _ = trt_runner(x)
+    x_np = preprocess_bgr(cv2.imread(str(frame_paths[0])), H, W)
+    x_pt = torch.from_numpy(x_np).to(device)
+    for _ in range(5):
+        with torch.no_grad():
+            _ = pt_model(x_pt).cpu().numpy()
+        _ = trt_runner(x_np)
+    if device == "cuda":
+        torch.cuda.synchronize()
 
     target = []
     if writer is not None: target.append(args.out)
@@ -207,33 +182,38 @@ def main():
     while n_frames is None or i < n_frames:
         frame_path = frame_paths[i % len(frame_paths)]
         bgr = cv2.imread(str(frame_path))
-        x = preprocess_bgr(bgr, H, W)
+        x_np = preprocess_bgr(bgr, H, W)
+        x_pt = torch.from_numpy(x_np).to(device)
 
+        # PyTorch eager
         t0 = time.perf_counter()
-        ort_logits = ort_sess.run(None, {ort_in_name: x})[0]
-        ort_ms = (time.perf_counter() - t0) * 1000
-        ort_window.append(ort_ms)
+        with torch.no_grad():
+            pt_logits = pt_model(x_pt).cpu().numpy()
+        if device == "cuda":
+            torch.cuda.synchronize()
+        pt_ms = (time.perf_counter() - t0) * 1000
+        pt_window.append(pt_ms)
 
+        # TRT FP16
         t0 = time.perf_counter()
-        trt_logits = trt_runner(x)
+        trt_logits = trt_runner(x_np)
         trt_ms = (time.perf_counter() - t0) * 1000
         trt_window.append(trt_ms)
 
-        ort_seg = to_segmentation_image(ort_logits, (panel_w, panel_h))
+        pt_seg = to_segmentation_image(pt_logits, (panel_w, panel_h))
         trt_seg = to_segmentation_image(trt_logits, (panel_w, panel_h))
 
         bg = cv2.resize(bgr, (panel_w, panel_h))
-        ort_panel = cv2.addWeighted(bg, 0.4, ort_seg, 0.6, 0)
+        pt_panel = cv2.addWeighted(bg, 0.4, pt_seg, 0.6, 0)
         trt_panel = cv2.addWeighted(bg, 0.4, trt_seg, 0.6, 0)
 
-        ort_label = f"ONNX Runtime ({args.ort_provider.upper()}) — before"
-        overlay_stats(ort_panel, ort_label,
-                      np.mean(ort_window), 1000 / np.mean(ort_window))
-        overlay_stats(trt_panel, "TensorRT FP16 (GPU) — after",
+        overlay_stats(pt_panel, "PyTorch (before)",
+                      np.mean(pt_window), 1000 / np.mean(pt_window))
+        overlay_stats(trt_panel, "TensorRT FP16 (after)",
                       np.mean(trt_window), 1000 / np.mean(trt_window))
 
         gutter = np.zeros((4, panel_w, 3), dtype=np.uint8)
-        composite = np.vstack([ort_panel, gutter, trt_panel])
+        composite = np.vstack([pt_panel, gutter, trt_panel])
 
         if show_window:
             cv2.imshow(win_title, composite)
@@ -245,15 +225,15 @@ def main():
         if (i + 1) % args.fps == 0:
             total = "∞" if n_frames is None else n_frames
             print(f"  {i+1:4}/{total}  "
-                  f"ORT {np.mean(ort_window):.1f} ms  "
+                  f"PT {np.mean(pt_window):.1f} ms  "
                   f"TRT {np.mean(trt_window):.1f} ms  "
-                  f"speedup {np.mean(ort_window)/np.mean(trt_window):.1f}x")
+                  f"speedup {np.mean(pt_window)/np.mean(trt_window):.1f}x")
 
         i += 1
 
     print(f"\nDone. Final speedup: "
-          f"{np.mean(ort_window)/np.mean(trt_window):.1f}x  "
-          f"(ORT {np.mean(ort_window):.1f} ms  TRT {np.mean(trt_window):.1f} ms)")
+          f"{np.mean(pt_window)/np.mean(trt_window):.1f}x  "
+          f"(PT {np.mean(pt_window):.1f} ms  TRT {np.mean(trt_window):.1f} ms)")
     if writer is not None:
         writer.release()
         print(f"Saved: {args.out}")

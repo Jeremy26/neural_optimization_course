@@ -13,7 +13,7 @@ PyTorch eager (slow) vs TensorRT FP16 (fast) — over Waymo driving footage.
 |------|---------|
 | `setup_orin.sh` | Lock the Orin into a reproducible benchmark state (power mode, clocks) |
 | `build_engines.sh` | Build TRT engines from `SceneSeg_FP32.onnx` via `trtexec` |
-| `compare_runtimes.py` | Run ONNX Runtime + TRT side by side on Waymo frames, render top/bottom MP4 (or live window) |
+| `compare_runtimes.py` | Run PyTorch + TRT side by side on Waymo frames, render top/bottom MP4 (or live window) |
 | `monitor_orin.sh` | Capture `tegrastats` while the demo runs (for power/temp overlays) |
 
 ---
@@ -43,25 +43,25 @@ sudo ./setup_orin.sh
 # 3. (Optional) Start tegrastats logging in another terminal
 ./monitor_orin.sh
 
-# 4. Record the top/bottom comparison MP4 (ORT CPU vs TRT FP16 GPU)
+# 4. Record the top/bottom comparison MP4 (PyTorch GPU vs TRT FP16 GPU)
 python3 compare_runtimes.py \
-    --onnx   SceneSeg_FP32.onnx \
+    --pt     SceneSeg_traced.pt \
     --engine SceneSeg_fp16.engine \
     --frames waymo_frames \
     --out    orin_demo.mp4 \
     --duration 30
 
-# Or run live (also live-only when looping). Needs DISPLAY + a GUI cv2 build:
+# Or run live (loop mode is live-only, no MP4). Needs DISPLAY + GUI cv2:
 python3 compare_runtimes.py \
-    --onnx   SceneSeg_FP32.onnx \
+    --pt     SceneSeg_traced.pt \
     --engine SceneSeg_fp16.engine \
     --frames waymo_frames \
     --display --loop
 ```
 
-Output: top panel = ONNX Runtime on the GPU (CUDA EP — the "before"), bottom panel =
+Output: top panel = PyTorch eager on the GPU (the "before"), bottom panel =
 TensorRT FP16 on the GPU (the "after"). Each panel has a live FPS + latency
-overlay. Pass `--ort-provider cpu` if you ever want the CPU baseline instead.
+overlay.
 
 ---
 
