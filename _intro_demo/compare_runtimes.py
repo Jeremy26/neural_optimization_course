@@ -127,10 +127,17 @@ def main():
                     help="Run forever until 'q' is pressed (ignores --duration)")
     ap.add_argument("--height", type=int, default=320, help="Model input H")
     ap.add_argument("--width", type=int, default=640, help="Model input W")
+    ap.add_argument("--pt-device", choices=["cuda", "cpu"], default="cpu",
+                    help="Where to run PyTorch eager (TRT always runs on GPU). "
+                         "Default 'cpu' avoids JP6.1+alpha-torch cuDNN issues "
+                         "and makes the before/after visibly dramatic.")
     args = ap.parse_args()
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Device: {device}")
+    device = args.pt_device
+    if device == "cuda" and not torch.cuda.is_available():
+        print("WARN: --pt-device cuda requested but no CUDA — falling back to cpu")
+        device = "cpu"
+    print(f"PyTorch device: {device}  (TRT always GPU)")
 
     pt_model = load_pytorch(args.pt, device)
     trt_runner = TRTRunner(load_engine(args.engine))
