@@ -123,18 +123,18 @@ fi
 # ── 8. pip / uv config ────────────────────────────
 echo ""
 echo "── Tool config files ────────────────────────"
-pip_conf_cache=$(python3 -c "import pip; print('')" 2>/dev/null; pip config get global.cache-dir 2>/dev/null)
+pip_conf_cache=$(pip config get global.cache-dir 2>/dev/null | tr -d '[:space:]')
 if [[ "$pip_conf_cache" == /ssd* ]]; then
     ok "pip.conf cache-dir = $pip_conf_cache"
 else
     warn "pip cache not configured to /ssd (got: '${pip_conf_cache:-unset}')"
 fi
 
-uv_conf=/root/.config/uv/uv.toml
+uv_conf="${XDG_CONFIG_HOME:-$HOME/.config}/uv/uv.toml"
 if [ -f "$uv_conf" ] && grep -q "/ssd" "$uv_conf" 2>/dev/null; then
-    ok "uv.toml points to /ssd"
+    ok "uv.toml points to /ssd ($uv_conf)"
 else
-    warn "uv.toml missing or not pointing to /ssd"
+    warn "uv.toml missing or not pointing to /ssd (checked: $uv_conf)"
 fi
 
 # ── 9. Conda ──────────────────────────────────────
