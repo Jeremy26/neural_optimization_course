@@ -12,9 +12,12 @@ PyTorch eager (slow) vs TensorRT FP16 (fast) — over Waymo driving footage.
 | File | Purpose |
 |------|---------|
 | `setup_orin.sh` | Lock the Orin into a reproducible benchmark state (power mode, clocks) |
-| `build_engines.sh` | Build TRT engines from `SceneSeg_FP32.onnx` via `trtexec` |
-| `compare_runtimes.py` | Run PyTorch + TRT side by side on Waymo frames, render top/bottom MP4 (or live window) |
-| `monitor_orin.sh` | Capture `tegrastats` while the demo runs (for power/temp overlays) |
+| `build_engines.sh` | Build TRT engines (FP16 via `trtexec` + INT8 via `build_int8_engine.py`) |
+| `build_int8_engine.py` | Standalone INT8 builder with PTQ calibration from a folder of images |
+| `compare_pt_fp16.py` | Stage 1 — PyTorch FP32 vs PyTorch FP16 (eager `.half()`) |
+| `compare_runtimes.py` | Stage 2 — PyTorch FP32 vs TensorRT FP16 |
+| `compare_trt_int8.py` | Stage 3 — PyTorch FP32 vs TensorRT INT8 |
+| `monitor_orin.sh` | Capture `tegrastats` while a demo runs (for power/temp overlays) |
 
 ---
 

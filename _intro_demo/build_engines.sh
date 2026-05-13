@@ -48,5 +48,15 @@ echo ""
 # For the demo video, FP16 is enough. INT8 is a "follow up" course topic.
 # ─────────────────────────────────────────────────────────────────────────────
 
+echo ""
+echo "==> Building INT8 engine (with PTQ calibration)..."
+echo "    (calibration data: $MODELS_DIR/downtown/front_images_downtown)"
+python3 "$(dirname "$0")/build_int8_engine.py" \
+    --onnx "$ONNX" \
+    --calib-dir "$MODELS_DIR/downtown/front_images_downtown" \
+    --cache "$MODELS_DIR/int8_calib.cache" \
+    --out "$MODELS_DIR/SceneSeg_int8.engine"
+
+echo ""
 echo "==> Engine summary:"
 ls -lh "$MODELS_DIR"/*.engine 2>/dev/null || true
