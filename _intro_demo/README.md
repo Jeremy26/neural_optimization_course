@@ -43,17 +43,24 @@ sudo ./setup_orin.sh
 # 3. (Optional) Start tegrastats logging in another terminal
 ./monitor_orin.sh
 
-# 4. Render the split-screen comparison video
+# 4. Run the live top/bottom comparison (press 'q' to quit)
 python3 compare_runtimes.py \
-    --pt    ~/scene_seg_demo/SceneSeg_traced.pt \
-    --engine ~/scene_seg_demo/SceneSeg_fp16.engine \
-    --frames ~/scene_seg_demo/waymo_frames \
-    --out    ~/scene_seg_demo/orin_demo.mp4 \
-    --fps    30 \
+    --pt     SceneSeg_traced.pt \
+    --engine SceneSeg_fp16.engine \
+    --frames waymo_frames \
+    --loop
+
+# Or, also record to MP4 while it plays:
+python3 compare_runtimes.py \
+    --pt     SceneSeg_traced.pt \
+    --engine SceneSeg_fp16.engine \
+    --frames waymo_frames \
+    --out    orin_demo.mp4 \
     --duration 30
 ```
 
-Output: `orin_demo.mp4`, 30 seconds, side-by-side, with FPS + latency overlay.
+Output: a live window with PyTorch on top, TRT FP16 on bottom, FPS + latency overlay
+on each. If `--out` is given, also writes an MP4.
 
 ---
 

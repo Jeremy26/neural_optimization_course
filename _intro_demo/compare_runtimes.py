@@ -1,11 +1,11 @@
-"""Render a side-by-side comparison video of SceneSeg running as:
-   LEFT  — PyTorch eager mode (the "before")
-   RIGHT — TensorRT FP16 engine (the "after")
+"""Live side-by-side (top/bottom) comparison of SceneSeg on Orin:
+   TOP    — PyTorch eager mode (the "before")
+   BOTTOM — TensorRT FP16 engine (the "after")
 
 Both run on the Orin GPU, on the same Waymo frames, frame by frame.
 Each panel shows live latency + FPS in an overlay.
 
-Designed for a course intro demo. Output is one MP4 file.
+Default behavior is a live OpenCV window. Pass --out PATH to also save MP4.
 """
 import argparse
 import time
@@ -100,12 +100,15 @@ def main():
     ap.add_argument("--pt", required=True, help="SceneSeg traced .pt")
     ap.add_argument("--engine", required=True, help="Built TRT FP16 .engine")
     ap.add_argument("--frames", required=True, help="Folder of .jpg frames")
-    ap.add_argument("--out", required=True, help="Output MP4 path")
+    ap.add_argument("--out", default=None,
+                    help="Optional MP4 path; if set, also record while playing")
     ap.add_argument("--fps", type=int, default=30)
-    ap.add_argument("--duration", type=int, default=30, help="Output seconds")
+    ap.add_argument("--duration", type=int, default=30,
+                    help="Run length in seconds (use --loop to ignore)")
+    ap.add_argument("--loop", action="store_true",
+                    help="Run forever until 'q' is pressed (ignores --duration)")
     ap.add_argument("--height", type=int, default=320, help="Model input H")
     ap.add_argument("--width", type=int, default=640, help="Model input W")
-    ap.add_argument("--display", action="store_true", help="Preview live (no MP4)")
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -128,18 +131,18 @@ def main():
     ])
 
     panel_w, panel_h = W, H
-    out_w = panel_w * 2 + 4   # 4px gutter
-    out_h = panel_h
+    out_w = panel_w
+    out_h = panel_h * 2 + 4   # 4px gutter between top/bottom panels
 
     writer = None
-    if not args.display:
+    if args.out is not None:
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         writer = cv2.VideoWriter(args.out, fourcc, args.fps, (out_w, out_h))
 
     pt_window = deque(maxlen=15)
     trt_window = deque(maxlen=15)
 
-    n_frames = args.fps * args.duration
+    n_frames = None if args.loop else args.fps * args.duration
     # Warmup — first runs are always slowest
     print("Warming up...")
     warmup_img = cv2.imread(str(frame_paths[0]))
@@ -150,8 +153,11 @@ def main():
             _ = pt_model(x.to(device)).cpu().numpy()
         _ = trt_runner(x.numpy())
 
-    print(f"Rendering {n_frames} frames -> {args.out}")
-    for i in range(n_frames):
+    target = "live window" + (f" + {args.out}" if args.out else "")
+    print(f"Running {'forever' if n_frames is None else n_frames} "
+          f"frames -> {target}.  Press 'q' to quit.")
+    i = 0
+    while n_frames is None or i < n_frames:
         frame_path = frame_paths[i % len(frame_paths)]
         bgr = cv2.imread(str(frame_path))
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
@@ -184,29 +190,31 @@ def main():
         overlay_stats(trt_panel, "TensorRT FP16 (after)",
                       np.mean(trt_window), 1000 / np.mean(trt_window))
 
-        gutter = np.zeros((panel_h, 4, 3), dtype=np.uint8)
-        composite = np.hstack([pt_panel, gutter, trt_panel])
+        gutter = np.zeros((4, panel_w, 3), dtype=np.uint8)
+        composite = np.vstack([pt_panel, gutter, trt_panel])
 
-        if args.display:
-            cv2.imshow("Orin demo", composite)
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                break
-        else:
+        cv2.imshow("Orin demo — PyTorch (top) vs TensorRT FP16 (bottom)",
+                   composite)
+        if writer is not None:
             writer.write(composite)
+        if cv2.waitKey(1) & 0xFF == ord("q"):
+            break
 
         if (i + 1) % args.fps == 0:
-            print(f"  {i+1:4}/{n_frames}  "
+            total = "∞" if n_frames is None else n_frames
+            print(f"  {i+1:4}/{total}  "
                   f"PT {np.mean(pt_window):.1f} ms  "
                   f"TRT {np.mean(trt_window):.1f} ms  "
                   f"speedup {np.mean(pt_window)/np.mean(trt_window):.1f}x")
 
+        i += 1
+
+    print(f"\nDone. Final speedup: "
+          f"{np.mean(pt_window)/np.mean(trt_window):.1f}x")
     if writer is not None:
         writer.release()
-        print(f"\nDone. Final speedup: "
-              f"{np.mean(pt_window)/np.mean(trt_window):.1f}x")
-        print(f"Output: {args.out}")
-    if args.display:
-        cv2.destroyAllWindows()
+        print(f"Saved: {args.out}")
+    cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
