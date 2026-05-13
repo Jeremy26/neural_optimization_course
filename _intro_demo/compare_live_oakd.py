@@ -91,22 +91,6 @@ def overlay_stats(img, label, latency_ms, fps):
                 2, cv2.LINE_AA)
 
 
-def build_oakd_pipeline(fps):
-    p = dai.Pipeline()
-    cam = p.create(dai.node.ColorCamera)
-    cam.setBoardSocket(dai.CameraBoardSocket.CAM_A)
-    cam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
-    cam.setInterleaved(False)
-    cam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
-    cam.setFps(fps)
-    cam.setPreviewSize(1280, 720)
-    cam.setPreviewKeepAspectRatio(True)
-    xout = p.create(dai.node.XLinkOut)
-    xout.setStreamName("preview")
-    cam.preview.link(xout.input)
-    return p
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pt", required=True, help="SceneSeg_traced.pt")
@@ -115,6 +99,8 @@ def main():
                     help="Optional MP4 path; if set, also record while playing")
     ap.add_argument("--cam-fps", type=int, default=30,
                     help="OAK-D requested capture FPS (default 30)")
+    ap.add_argument("--cam-w", type=int, default=1280, help="Camera output width")
+    ap.add_argument("--cam-h", type=int, default=720,  help="Camera output height")
     ap.add_argument("--height", type=int, default=320)
     ap.add_argument("--width", type=int, default=640)
     args = ap.parse_args()
@@ -144,10 +130,14 @@ def main():
     trt_window = deque(maxlen=15)
 
     print("Connecting to OAK-D...")
-    with dai.Device(build_oakd_pipeline(args.cam_fps)) as oak:
-        q = oak.getOutputQueue("preview", maxSize=4, blocking=False)
+    with dai.Pipeline() as pipeline:
+        cam = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_A)
+        cam_out = cam.requestOutput((args.cam_w, args.cam_h),
+                                    dai.ImgFrame.Type.BGR888i,
+                                    fps=args.cam_fps)
+        q = cam_out.createOutputQueue()
+        pipeline.start()
 
-        # Warmup
         print("Waiting for first frame...")
         first = q.get().getCvFrame()
         x_np = preprocess_bgr(first, H, W)
@@ -161,7 +151,7 @@ def main():
         print("Running. Press 'q' to quit.")
 
         i = 0
-        while True:
+        while pipeline.isRunning():
             bgr = q.get().getCvFrame()
             x_np = preprocess_bgr(bgr, H, W)
             x_pt = torch.from_numpy(x_np).to(device)
