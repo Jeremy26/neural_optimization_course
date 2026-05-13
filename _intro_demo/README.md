@@ -50,7 +50,7 @@ sudo ./setup_orin.sh
 python3 compare_runtimes.py \
     --pt     SceneSeg_traced.pt \
     --engine SceneSeg_fp16.engine \
-    --frames waymo_frames \
+    --frames downtown/front_images_downtown \
     --out    orin_demo.mp4 \
     --duration 30
 
@@ -58,7 +58,7 @@ python3 compare_runtimes.py \
 python3 compare_runtimes.py \
     --pt     SceneSeg_traced.pt \
     --engine SceneSeg_fp16.engine \
-    --frames waymo_frames \
+    --frames downtown/front_images_downtown \
     --display --loop
 ```
 

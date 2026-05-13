@@ -2,7 +2,7 @@
    TOP    — PyTorch eager mode (GPU) — the "before"
    BOTTOM — TensorRT INT8 engine (GPU) — the "after"
 
-Both consume the same Waymo frames, frame by frame.
+Both consume the same driving frames, frame by frame.
 Each panel shows running latency + FPS in an overlay.
 
 Default output is an MP4. Pass --display to also open a live window.

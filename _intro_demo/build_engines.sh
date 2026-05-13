@@ -41,7 +41,7 @@ echo ""
 #           --saveEngine=$MODELS_DIR/SceneSeg_int8.engine
 #
 # (b) Proper PTQ calibration: write a Python calibrator that feeds 50–100 real
-#     Waymo frames through the network, then call trtexec with --calib=cache.
+#     driving frames through the network, then call trtexec with --calib=cache.
 #     See the Workshop notebook (Step 4 — TensorRT INT8) for the calibrator code,
 #     ported to native TRT API for aarch64 / Jetson.
 #
