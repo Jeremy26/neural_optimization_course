@@ -15,10 +15,11 @@ import cv2
 import numpy as np
 import torch
 
+# Stage 1 palette — red background, blue foreground, Nvidia green road
 COLORS = np.array([
-    [240,  40,  40],
-    [180,  60, 200],
-    [ 80, 200,  80],
+    [220,  70,  50],   # background — warm red
+    [ 40, 100, 230],   # foreground (cars / pedestrians) — dominant blue
+    [118, 185,   0],   # drivable road — Nvidia green
 ], dtype=np.uint8)
 
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)

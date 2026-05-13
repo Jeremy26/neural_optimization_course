@@ -22,11 +22,11 @@ import tensorrt as trt
 import pycuda.driver as cuda
 import pycuda.autoinit  # noqa: F401  (initializes CUDA context)
 
-# Class colors — matches the Workshop / Mini_ONNX
+# Stage 2 palette — purple background, blue foreground, Nvidia green road
 COLORS = np.array([
-    [240,  40,  40],   # background
-    [180,  60, 200],   # foreground (cars / pedestrians)
-    [ 80, 200,  80],   # drivable road
+    [160,  60, 200],   # background — purple
+    [ 40, 100, 230],   # foreground (cars / pedestrians) — dominant blue
+    [118, 185,   0],   # drivable road — Nvidia green
 ], dtype=np.uint8)
 
 IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
